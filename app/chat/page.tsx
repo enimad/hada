@@ -22,7 +22,7 @@ export default function ChatPage() {
     {
       role: "assistant",
       content:
-        "Vous preparez un mariage elegant a Aix-en-Provence pour 120 invites en juin 2027. Quel prestataire voulez-vous trouver en premier ?"
+        "Bonjour, je suis Hada. Vous preparez un mariage elegant a Aix-en-Provence pour 120 invites en juin 2027. Quel prestataire voulez-vous trouver en premier ?"
     }
   ]);
   const [input, setInput] = useState("");
