@@ -52,15 +52,15 @@ Guide detaille: [docs/setup.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-
 
 ## GitHub
 
-La session GitHub connectee dans Codex est `enimad`. Je peux preparer le versioning localement et pousser des que le remote GitHub existe et que `git` est accessible dans le terminal.
+Le projet local est initialise en Git et pointe vers `https://github.com/enimad/hada.git`.
 
-Etapes conseillees:
+Etat actuel:
 
-1. creer un nouveau repo vide sur GitHub
-2. installer Git localement
-3. initialiser le dossier et pousser le code
+- commits locaux crees
+- remote `origin` configure vers `enimad/hada`
+- push GitHub bloque ici par l'authentification HTTPS non interactive du terminal
 
-Les commandes sont dans [docs/setup.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/setup.md)
+La suite et les commandes utiles sont dans [docs/setup.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/setup.md)
 
 ## Documents produit
 
