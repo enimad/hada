@@ -1,34 +1,111 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState, useTransition } from "react";
+import { HadaPortrait } from "@/components/hada-portrait";
 import { Shell } from "@/components/shell";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export default function SignupPage() {
+  const router = useRouter();
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [isPending, startTransition] = useTransition();
+
   return (
     <Shell
-      title="Inscription"
-      subtitle="Cette etape cree le compte puis lance l'onboarding pour remplir les informations essentielles du mariage."
+      hideNav
+      backHref="/"
+      title="Creation de compte"
+      subtitle="Hada a besoin de votre compte pour memoriser votre projet mariage et votre progression."
     >
-      <form className="max-w-2xl rounded-[28px] bg-white/85 p-8 shadow-card">
-        <div className="grid gap-5 md:grid-cols-2">
-          <label className="grid gap-2">
-            <span className="text-sm">Prenom</span>
-            <input className="rounded-2xl border border-black/10 px-4 py-3" placeholder="Lea" />
-          </label>
-          <label className="grid gap-2">
-            <span className="text-sm">Nom</span>
-            <input className="rounded-2xl border border-black/10 px-4 py-3" placeholder="Martin" />
-          </label>
-          <label className="grid gap-2 md:col-span-2">
-            <span className="text-sm">Email</span>
-            <input className="rounded-2xl border border-black/10 px-4 py-3" placeholder="lea@example.com" />
-          </label>
-          <label className="grid gap-2 md:col-span-2">
-            <span className="text-sm">Mot de passe</span>
-            <input className="rounded-2xl border border-black/10 px-4 py-3" type="password" placeholder="********" />
-          </label>
+      <div className="space-y-6">
+        <div className="hada-soft-card px-5 py-6 text-center">
+          <HadaPortrait size="sm" />
+          <p className="mt-4 text-sm leading-6 text-[var(--hada-muted)]">
+            Vous pourrez ensuite commencer le profilage en quelques etapes simples.
+          </p>
         </div>
-        <button type="button" className="mt-6 rounded-full bg-ink px-6 py-3 text-sm text-white">
-          Creer mon compte
-        </button>
-      </form>
+
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            startTransition(async () => {
+              setMessage("");
+              const supabase = createSupabaseBrowserClient();
+              const { data, error } = await supabase.auth.signUp({
+                email,
+                password,
+                options: {
+                  emailRedirectTo: `${window.location.origin}/login?confirmed=1`,
+                  data: {
+                    first_name: firstName,
+                    last_name: lastName
+                  }
+                }
+              });
+
+              if (error) {
+                setMessage(error.message);
+                return;
+              }
+
+              if (data.session) {
+                router.push("/onboarding");
+                router.refresh();
+                return;
+              }
+
+              setMessage("Compte cree. Verifiez votre email puis connectez-vous pour continuer.");
+            });
+          }}
+        >
+          <FormInput placeholder="Prenom" value={firstName} onChange={setFirstName} />
+          <FormInput placeholder="Nom" value={lastName} onChange={setLastName} />
+          <FormInput placeholder="Email" type="email" value={email} onChange={setEmail} />
+          <FormInput placeholder="Mot de passe" type="password" value={password} onChange={setPassword} />
+
+          <button disabled={isPending} className="hada-primary-button">
+            {isPending ? "Creation..." : "Creer mon compte"}
+          </button>
+
+          {message ? <p className="text-center text-sm text-[var(--hada-muted)]">{message}</p> : null}
+        </form>
+
+        <p className="text-center text-sm text-[#908188]">
+          Deja inscrit ?{" "}
+          <Link href="/login" className="font-semibold text-[var(--hada-ink)]">
+            Connexion
+          </Link>
+        </p>
+      </div>
     </Shell>
+  );
+}
+
+function FormInput({
+  placeholder,
+  value,
+  onChange,
+  type = "text"
+}: {
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+}) {
+  return (
+    <input
+      className="hada-input"
+      placeholder={placeholder}
+      type={type}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
   );
 }

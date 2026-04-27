@@ -1,26 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { env, validateServerEnv } from "@/lib/env";
 import { buildPlannerSystemPrompt } from "@/lib/prompts";
+import { getAuthenticatedUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { ChatMessage } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
   try {
     validateServerEnv();
-    const body = await request.json();
-    const userId = body.userId as string | undefined;
-    const messages = (body.messages ?? []) as ChatMessage[];
-
-    if (!userId) {
-      return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+    const { user, error: authError } = await getAuthenticatedUser(request);
+    if (!user) {
+      return NextResponse.json({ error: authError }, { status: 401 });
     }
+
+    const body = await request.json();
+    const messages = (body.messages ?? []) as ChatMessage[];
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json({ error: "Missing messages" }, { status: 400 });
     }
 
     const supabase = createSupabaseServerClient();
-    const { data: profile } = await supabase.from("wedding_profiles").select("*").eq("user_id", userId).maybeSingle();
+    const { data: profile } = await supabase.from("wedding_profiles").select("*").eq("user_id", user.id).maybeSingle();
 
     const systemPrompt = buildPlannerSystemPrompt(profile, messages);
 

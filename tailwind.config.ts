@@ -9,14 +9,16 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        sand: "#efe7da",
-        ink: "#1f1a17",
-        clay: "#b56a52",
-        olive: "#6d7c4f",
-        cream: "#faf6ef"
+        sand: "#fff6f3",
+        ink: "#23171d",
+        clay: "#ff7f86",
+        olive: "#f2a53d",
+        cream: "#fffdfb",
+        smoke: "#f5efee",
+        berry: "#7c5462"
       },
       boxShadow: {
-        card: "0 14px 40px rgba(31, 26, 23, 0.08)"
+        card: "0 18px 48px rgba(45, 24, 32, 0.10)"
       }
     }
   },

@@ -1,123 +1,152 @@
 "use client";
 
-import { FormEvent, useState, useTransition } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { HadaPortrait } from "@/components/hada-portrait";
 import { Shell } from "@/components/shell";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import type { WeddingProfile } from "@/lib/types";
 
-type UiMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
-
-const starterSummary = {
-  couple: "Lea & Hugo",
-  date: "19 juin 2027",
-  location: "Aix-en-Provence",
-  guests: "120 invites",
-  budget: "25 000 - 35 000 EUR",
-  style: "Elegant provençal"
+const fallbackSummary = {
+  couple: "Profil a completer",
+  date: "Date non renseignee",
+  location: "Lieu non renseigne",
+  guests: "Invites non renseignes",
+  budget: "Budget non renseigne"
 };
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState<UiMessage[]>([
-    {
-      role: "assistant",
-      content:
-        "Bonjour, je suis Hada. Vous preparez un mariage elegant a Aix-en-Provence pour 120 invites en juin 2027. Quel prestataire voulez-vous trouver en premier ?"
-    }
-  ]);
-  const [input, setInput] = useState("");
-  const [isPending, startTransition] = useTransition();
+  const router = useRouter();
+  const [profile, setProfile] = useState<WeddingProfile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [searchStage, setSearchStage] = useState<"intro" | "researching" | "ready">("intro");
+  const [sentConfirmation, setSentConfirmation] = useState(false);
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  useEffect(() => {
+    const supabase = createSupabaseBrowserClient();
 
-    const trimmed = input.trim();
-    if (!trimmed) return;
+    async function loadSessionAndProfile() {
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
 
-    const nextMessages = [...messages, { role: "user" as const, content: trimmed }];
-    setMessages(nextMessages);
-    setInput("");
+      if (!session) {
+        router.replace("/login");
+        return;
+      }
 
-    startTransition(async () => {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: "demo-user",
-          messages: nextMessages
-        })
+      const params = new URLSearchParams(window.location.search);
+      setSentConfirmation(params.get("sent") === "1");
+
+      const response = await fetch("/api/profile", {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`
+        }
       });
 
-      const result = await response.json();
+      if (response.ok) {
+        const result = (await response.json()) as { profile: WeddingProfile | null };
+        setProfile(result.profile);
+      }
 
-      setMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content:
-            result.assistantMessage ??
-            "Je n'ai pas pu formuler une reponse pour le moment. Verifie la configuration Mistral et Supabase."
-        }
-      ]);
-    });
+      setIsLoading(false);
+    }
+
+    loadSessionAndProfile();
+  }, [router]);
+
+  useEffect(() => {
+    if (searchStage !== "researching") return;
+    const timer = window.setTimeout(() => setSearchStage("ready"), 1800);
+    return () => window.clearTimeout(timer);
+  }, [searchStage]);
+
+  const summary = useMemo(() => buildProfileSummary(profile), [profile]);
+
+  if (isLoading) {
+    return (
+      <Shell hideNav title="Chat Hada" subtitle="Hada charge votre contexte mariage avant de reprendre la conversation.">
+        <div className="hada-soft-card px-5 py-10 text-center text-sm text-[var(--hada-muted)]">Chargement du contexte Hada...</div>
+      </Shell>
+    );
   }
 
   return (
     <Shell
-      title="Chat Hada"
-      subtitle="Hada reutilise le profil mariage pour reformuler le contexte, poser des questions utiles et preparer la recherche de prestataires."
+      hideNav
+      title="Suite du chat avec Hada"
+      subtitle="Hada relit votre projet puis vous accompagne pas a pas dans la recherche de lieu."
+      topSlot={<span className="hada-pill bg-[#fff4e3] text-[var(--hada-gold)]">Hada cherche</span>}
     >
-      <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-        <aside className="rounded-[28px] bg-white/80 p-6 shadow-card">
-          <p className="text-xs uppercase tracking-[0.3em] text-clay">Recap profil</p>
-          <div className="mt-5 grid gap-3 text-sm">
-            <SummaryItem label="Couple" value={starterSummary.couple} />
-            <SummaryItem label="Date" value={starterSummary.date} />
-            <SummaryItem label="Zone" value={starterSummary.location} />
-            <SummaryItem label="Invites" value={starterSummary.guests} />
-            <SummaryItem label="Budget" value={starterSummary.budget} />
-            <SummaryItem label="Style" value={starterSummary.style} />
+      <div className="space-y-5">
+        {sentConfirmation ? (
+          <div className="rounded-[20px] border border-[#f3dbbc] bg-[#fff6e8] px-4 py-4 text-sm leading-6 text-[#725437]">
+            Hada a bien pris en compte le message au prestataire et reviendra des qu&apos;elle aura une reponse.
           </div>
-        </aside>
+        ) : null}
 
-        <section className="flex min-h-[620px] flex-col rounded-[28px] bg-white/85 p-6 shadow-card">
-          <div className="flex-1 space-y-4 overflow-y-auto">
-            {messages.map((message, index) => (
-              <div
-                key={`${message.role}-${index}`}
-                className={`max-w-[80%] rounded-[24px] px-5 py-4 text-sm leading-7 ${
-                  message.role === "assistant"
-                    ? "bg-[#f7f1e8] text-ink"
-                    : "ml-auto bg-ink text-white"
-                }`}
-              >
-                {message.content}
-              </div>
-            ))}
+        <div className="flex items-start gap-3">
+          <HadaPortrait size="sm" />
+          <div className="hada-soft-card flex-1 p-5 text-sm leading-7 text-[var(--hada-ink)]">
+            <p>
+              Bonjour, je suis Hada. J&apos;ai note {summary.couple}, {summary.date}, {summary.location}, {summary.guests}, budget {summary.budget}.
+            </p>
+            <p className="mt-3">Dites-moi ce que vous souhaitez booker en premier et je vous aide a avancer.</p>
           </div>
+        </div>
 
-          <form onSubmit={onSubmit} className="mt-6 flex gap-3">
-            <input
-              className="flex-1 rounded-full border border-black/10 bg-white px-5 py-4 text-sm"
-              placeholder="Ex: Je cherche un lieu avec hebergement sur place."
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-            />
-            <button disabled={isPending} className="rounded-full bg-clay px-6 py-4 text-sm text-white">
-              {isPending ? "Envoi..." : "Envoyer"}
+        <div className="ml-auto max-w-[83%] rounded-[24px] bg-[#2d2027] px-4 py-4 text-sm leading-7 text-white">Je cherche un lieu.</div>
+
+        {searchStage === "intro" ? (
+          <div className="hada-card p-5">
+            <p className="text-sm leading-7 text-[var(--hada-ink)]">
+              Parfait. Hada peut lancer une recherche de lieux adaptes a votre profil. Voulez-vous que je commence ?
+            </p>
+            <button className="hada-primary-button mt-4" onClick={() => setSearchStage("researching")}>
+              Lancer la recherche
             </button>
-          </form>
-        </section>
+          </div>
+        ) : null}
+
+        {searchStage === "researching" ? (
+          <div className="rounded-[24px] border border-[#ebe4e2] bg-[#f5f2f1] px-5 py-6 text-sm leading-7 text-[#83767b]">
+            2-3 coups de baguette et je vais te trouver les lieux les plus adaptes a ta demande.
+          </div>
+        ) : null}
+
+        {searchStage === "ready" ? (
+          <div className="hada-soft-card p-5">
+            <p className="text-sm leading-7 text-[var(--hada-ink)]">
+              J&apos;ai trouve une premiere selection de lieux qui semblent tres bien correspondre a ton mariage.
+            </p>
+            <Link href="/venues" className="hada-primary-button mt-4">
+              Voir les nouveaux lieux
+            </Link>
+          </div>
+        ) : null}
       </div>
     </Shell>
   );
 }
 
-function SummaryItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-black/10 px-4 py-3">
-      <p className="text-xs uppercase tracking-[0.2em] text-black/45">{label}</p>
-      <p className="mt-1">{value}</p>
-    </div>
-  );
+function buildProfileSummary(profile: WeddingProfile | null) {
+  if (!profile) {
+    return fallbackSummary;
+  }
+
+  return {
+    couple:
+      profile.partner_one_name || profile.partner_two_name
+        ? `${profile.partner_one_name ?? "?"} & ${profile.partner_two_name ?? "?"}`
+        : fallbackSummary.couple,
+    date: profile.wedding_date ?? profile.wedding_period_text ?? fallbackSummary.date,
+    location:
+      [profile.city, profile.region, profile.country].filter(Boolean).join(", ") || fallbackSummary.location,
+    guests: profile.guest_count ? `${profile.guest_count} invites` : fallbackSummary.guests,
+    budget:
+      profile.budget_min || profile.budget_max
+        ? `${profile.budget_min ?? "?"} - ${profile.budget_max ?? "?"} EUR`
+        : fallbackSummary.budget
+  };
 }

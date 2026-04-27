@@ -23,6 +23,12 @@ Pourquoi:
    - `service_role secret key`
 5. Dans `SQL Editor`, colle le contenu de [supabase/schema.sql](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/supabase/schema.sql)
 
+Si tu vois l'erreur:
+
+`Could not find the table 'public.wedding_profiles' in the schema cache`
+
+cela signifie en pratique que le schema SQL de Hada n'a pas encore ete execute sur ton projet Supabase. Il faut donc ouvrir `SQL Editor` et lancer le contenu complet de [supabase/schema.sql](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/supabase/schema.sql).
+
 Important:
 
 - les identites utilisateur doivent idealement vivre dans `auth.users`
@@ -47,6 +53,52 @@ Valeur conseillee pour commencer:
 - `MISTRAL_MODEL=mistral-large-latest`
 
 La route [app/api/chat/route.ts](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/app/api/chat/route.ts) appelle directement l'API Mistral via HTTP.
+
+## 2bis. Ou mettre les cles et secrets
+
+Tu dois creer un fichier `.env.local` a la racine du projet, au meme niveau que `package.json`.
+
+Le plus simple:
+
+1. dupliquer le fichier [.env.example](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/.env.example)
+2. renommer la copie en `.env.local`
+3. remplir les valeurs a droite du `=`
+
+Exemple:
+
+```env
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+
+NEXT_PUBLIC_SUPABASE_URL=https://ton-projet.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=ta_cle_publique_supabase
+SUPABASE_SERVICE_ROLE_KEY=ta_cle_service_role_supabase
+
+MISTRAL_API_KEY=ta_cle_mistral
+MISTRAL_MODEL=mistral-large-latest
+```
+
+Important:
+
+- `NEXT_PUBLIC_SUPABASE_URL` et `NEXT_PUBLIC_SUPABASE_ANON_KEY` sont utilises cote navigateur et cote app
+- `SUPABASE_SERVICE_ROLE_KEY` est secrete et ne doit jamais etre exposee publiquement
+- `MISTRAL_API_KEY` est secrete et ne doit jamais etre committee
+- `.env.local` est deja ignore par Git dans [.gitignore](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/.gitignore)
+
+Ou trouver les valeurs Supabase:
+
+1. ouvrir ton projet Supabase
+2. aller dans `Project Settings`
+3. ouvrir `API`
+4. copier:
+   - `Project URL`
+   - `anon public key`
+   - `service_role secret key`
+
+Ou trouver la valeur Mistral:
+
+- ta cle Mistral existante
+
+Ensuite, redemarre le serveur Next.js si `npm run dev` etait deja lance.
 
 ## 3. Creer le repo GitHub
 

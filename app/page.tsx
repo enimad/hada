@@ -1,49 +1,51 @@
 import Link from "next/link";
+import { HadaPortrait } from "@/components/hada-portrait";
 import { Shell } from "@/components/shell";
-
-const steps = [
-  "Creation du compte et collecte des informations du mariage",
-  "Recap intelligent dans le chat",
-  "Qualification du besoin prestataire",
-  "Recherche ciblee et top 5 recommandations",
-  "Brouillon de message puis prise de contact"
-];
 
 export default function HomePage() {
   return (
-    <Shell
-      title="Hada transforme un projet de mariage en decisions puis en actions concretes."
-      subtitle="Ce MVP est pense pour aider un couple a formaliser son mariage, demander un prestataire et avancer jusqu'au contact avec une experience signee Hada."
-    >
-      <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-        <section className="rounded-[28px] border border-black/10 bg-white/80 p-8 shadow-card backdrop-blur">
-          <p className="mb-6 max-w-xl text-lg leading-8 text-black/75">
-            Hada commence par comprendre le projet du couple, puis elle se comporte comme une coordinatrice:
-            elle reformule, complete les criteres et prepare une recherche prestataire exploitable.
-          </p>
-          <div className="flex flex-wrap gap-4">
-            <Link href="/signup" className="rounded-full bg-ink px-6 py-3 text-sm text-white">
-              Commencer le parcours
-            </Link>
-            <Link href="/chat" className="rounded-full border border-black/10 px-6 py-3 text-sm">
-              Voir le chat MVP
-            </Link>
+    <Shell hideNav topSlot={<span className="hada-label text-[var(--hada-gold)]">Wedding planner IA</span>}>
+      <div className="flex min-h-[700px] flex-col">
+        <div className="space-y-5 pt-2 text-center">
+          <HadaPortrait size="lg" />
+          <div className="space-y-3">
+            <p className="hada-label text-[var(--hada-gold)]">Profilage</p>
+            <h1 className="text-[34px] font-semibold leading-[1.02] tracking-[-0.055em] text-[var(--hada-ink)]">
+              Profilage ?
+            </h1>
+            <p className="mx-auto max-w-[286px] text-sm leading-6 text-[var(--hada-muted)]">
+              Hada apprend a vous connaitre pour trouver les lieux les plus adaptes a votre mariage.
+            </p>
           </div>
-        </section>
+        </div>
 
-        <aside className="rounded-[28px] bg-[#f7f1e8] p-8 shadow-card">
-          <p className="text-xs uppercase tracking-[0.3em] text-clay">Parcours cible</p>
-          <ol className="mt-6 space-y-4 text-sm leading-6">
-            {steps.map((step, index) => (
-              <li key={step} className="flex gap-3">
-                <span className="mt-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-clay text-xs text-white">
+        <div className="hada-soft-card mt-8 p-5">
+          <p className="text-sm font-semibold text-[var(--hada-ink)]">Ce que Hada va faire avec vous</p>
+          <div className="mt-4 space-y-3">
+            {[
+              "Comprendre votre mariage en quelques questions",
+              "Reformuler votre besoin dans le chat",
+              "Comparer les meilleurs lieux pour vous",
+              "Vous aider a contacter les prestataires"
+            ].map((item, index) => (
+              <div key={item} className="hada-card flex items-start gap-3 px-4 py-3">
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#fff2ef] text-xs font-semibold text-[var(--hada-primary)]">
                   {index + 1}
                 </span>
-                <span>{step}</span>
-              </li>
+                <span className="flex-1 text-sm leading-6 text-[#46373f]">{item}</span>
+              </div>
             ))}
-          </ol>
-        </aside>
+          </div>
+        </div>
+
+        <div className="mt-auto space-y-3 pt-8">
+          <Link href="/signup" className="hada-primary-button">
+            Commencer
+          </Link>
+          <Link href="/login" className="hada-secondary-button">
+            J&apos;ai deja un compte
+          </Link>
+        </div>
       </div>
     </Shell>
   );

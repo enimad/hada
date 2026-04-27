@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAuthenticatedUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 function computeCompletionScore(payload: Record<string, unknown>) {
@@ -17,31 +18,41 @@ function computeCompletionScore(payload: Record<string, unknown>) {
   return Math.round((completed / trackedFields.length) * 100);
 }
 
+function formatProfileError(message: string) {
+  if (message.includes("public.wedding_profiles")) {
+    return "La table Supabase `public.wedding_profiles` est introuvable. Ouvre Supabase > SQL Editor puis execute le contenu de `supabase/schema.sql`.";
+  }
+
+  return message;
+}
+
 export async function GET(request: NextRequest) {
-  const userId = request.nextUrl.searchParams.get("userId");
-  if (!userId) {
-    return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+  const { user, error: authError } = await getAuthenticatedUser(request);
+  if (!user) {
+    return NextResponse.json({ error: authError }, { status: 401 });
   }
 
   const supabase = createSupabaseServerClient();
-  const { data, error } = await supabase.from("wedding_profiles").select("*").eq("user_id", userId).maybeSingle();
+  const { data, error } = await supabase.from("wedding_profiles").select("*").eq("user_id", user.id).maybeSingle();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: formatProfileError(error.message) }, { status: 500 });
   }
 
   return NextResponse.json({ profile: data });
 }
 
 export async function PUT(request: NextRequest) {
-  const body = await request.json();
-  if (!body.userId) {
-    return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+  const { user, error: authError } = await getAuthenticatedUser(request);
+  if (!user) {
+    return NextResponse.json({ error: authError }, { status: 401 });
   }
+
+  const body = await request.json();
 
   const supabase = createSupabaseServerClient();
   const payload = {
-    user_id: body.userId,
+    user_id: user.id,
     partner_one_name: body.partner_one_name ?? null,
     partner_two_name: body.partner_two_name ?? null,
     wedding_date: body.wedding_date ?? null,
@@ -65,7 +76,7 @@ export async function PUT(request: NextRequest) {
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: formatProfileError(error.message) }, { status: 500 });
   }
 
   return NextResponse.json({ profile: data });
