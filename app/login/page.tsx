@@ -1,99 +1,77 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { HadaPortrait } from "@/components/hada-portrait";
-import { Shell } from "@/components/shell";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { EyeIcon, EyeOffIcon, LineInput, MainButton, MobileScreen } from "@/components/mobile-screen";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    setConfirmed(params.get("confirmed") === "1");
+    setEmail(params.get("email") ?? "");
+    if (params.get("confirmed") === "1") {
+      setMessage("Email confirme. Vous pouvez maintenant vous connecter.");
+    }
   }, []);
 
   return (
-    <Shell hideNav backHref="/" title="Connexion" subtitle="Retrouvez votre parcours, vos lieux et vos messages avec Hada.">
-      <div className="space-y-6">
-        <div className="hada-soft-card px-5 py-6 text-center">
-          <HadaPortrait size="sm" />
-          <p className="mt-4 text-sm leading-6 text-[var(--hada-muted)]">
-            Hada recharge votre contexte mariage et reprend votre progression.
-          </p>
-        </div>
-
-        <form
-          className="space-y-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            startTransition(async () => {
-              setMessage("");
-              const supabase = createSupabaseBrowserClient();
-              const { error } = await supabase.auth.signInWithPassword({ email, password });
-
-              if (error) {
-                setMessage(error.message);
-                return;
-              }
-
-              router.push("/onboarding");
-              router.refresh();
-            });
-          }}
-        >
-          {confirmed ? (
-            <div className="rounded-[18px] border border-[#f3dbbc] bg-[#fff6e8] px-4 py-4 text-sm leading-6 text-[#725437]">
-              Email confirme. Vous pouvez maintenant vous connecter.
-            </div>
-          ) : null}
-
-          <FormInput placeholder="Email" type="email" value={email} onChange={setEmail} />
-          <FormInput placeholder="Mot de passe" type="password" value={password} onChange={setPassword} />
-
-          <button disabled={isPending} className="hada-primary-button">
-            {isPending ? "Connexion..." : "Se connecter"}
-          </button>
-
-          {message ? <p className="text-center text-sm text-[var(--hada-muted)]">{message}</p> : null}
-        </form>
-
-        <p className="text-center text-sm text-[#908188]">
-          Pas encore de compte ?{" "}
-          <Link href="/signup" className="font-semibold text-[var(--hada-ink)]">
-            Inscription
-          </Link>
+    <MobileScreen className="pb-10 pt-10">
+      <div className="pt-6 text-center">
+        <h1 className="text-[40px] font-bold tracking-[-0.06em] text-[var(--hada-navy)] sm:text-[56px]">Connecte-toi</h1>
+        <p className="mx-auto mt-10 max-w-[320px] text-[18px] font-medium leading-[1.25] tracking-[-0.04em] text-[var(--hada-navy)] sm:max-w-[360px] sm:text-[22px]">
+          Ta premiere analyse t&apos;attend... connecte-toi pour la decouvrir
         </p>
       </div>
-    </Shell>
-  );
-}
 
-function FormInput({
-  placeholder,
-  value,
-  onChange,
-  type = "text"
-}: {
-  placeholder: string;
-  value: string;
-  onChange: (value: string) => void;
-  type?: string;
-}) {
-  return (
-    <input
-      className="hada-input"
-      placeholder={placeholder}
-      type={type}
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-    />
+      <form
+        className="mt-12"
+        onSubmit={(event) => {
+          event.preventDefault();
+
+          startTransition(async () => {
+            const supabase = createSupabaseBrowserClient();
+            const { error } = await supabase.auth.signInWithPassword({ email, password });
+
+            if (error) {
+              setMessage(error.message);
+              return;
+            }
+
+            router.push("/login/loading");
+          });
+        }}
+      >
+        <div className="space-y-8">
+          <LineInput label="Ton adresse mail" value={email} onChange={setEmail} placeholder="hada@gmail.com" type="email" inputMode="email" />
+          <LineInput
+            label="Ton mot de passe"
+            value={password}
+            onChange={setPassword}
+            type={showPassword ? "text" : "password"}
+            placeholder="***********"
+            rightSlot={
+              <button type="button" onClick={() => setShowPassword((current) => !current)} className="text-[#8f8884]">
+                {showPassword ? <EyeOffIcon className="h-7 w-7" /> : <EyeIcon className="h-7 w-7" />}
+              </button>
+            }
+          />
+        </div>
+
+        <div className="mt-10">
+          <MainButton type="submit" disabled={!email || !password || isPending}>
+            Je continue
+          </MainButton>
+        </div>
+
+        {message ? <p className="mt-4 text-center text-[14px] text-[#8d8387]">{message}</p> : null}
+      </form>
+    </MobileScreen>
   );
 }

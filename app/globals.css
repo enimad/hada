@@ -4,28 +4,27 @@
 
 :root {
   color-scheme: light;
-  --hada-bg: #f3efec;
-  --hada-paper: #ffffff;
-  --hada-ink: #241a20;
-  --hada-muted: #73656d;
-  --hada-line: #eee3df;
-  --hada-soft: #fcf7f5;
-  --hada-soft-strong: #fff0ef;
-  --hada-primary: #ff7f86;
-  --hada-primary-dark: #f16973;
-  --hada-gold: #e1a049;
-  --hada-shadow: 0 26px 70px rgba(57, 31, 39, 0.1);
+  --hada-cream: #fdf9f6;
+  --hada-navy: #2b214f;
+  --hada-coral: #fb6974;
+  --hada-coral-soft: #ffd9dc;
+  --hada-coral-line: #ff6673;
+  --hada-gold: #ffad33;
+  --hada-text-soft: #8f8884;
+  --hada-line-strong: #ff6c75;
 }
 
+html,
 body {
   margin: 0;
-  min-height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgba(255, 127, 134, 0.18), transparent 28%),
-    radial-gradient(circle at top right, rgba(226, 160, 73, 0.16), transparent 24%),
-    linear-gradient(180deg, #f8f3f1 0%, var(--hada-bg) 100%);
-  color: var(--hada-ink);
+  min-height: 100%;
+  background: var(--hada-cream);
+  color: var(--hada-navy);
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 a {
@@ -33,126 +32,13 @@ a {
   text-decoration: none;
 }
 
-* {
-  box-sizing: border-box;
+button,
+input,
+textarea {
+  font: inherit;
 }
 
-.hada-phone-shell {
-  position: relative;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.25) 100%),
-    radial-gradient(circle at top right, rgba(226, 160, 73, 0.14), transparent 30%),
-    radial-gradient(circle at left bottom, rgba(255, 127, 134, 0.14), transparent 33%);
-  box-shadow: 0 25px 80px rgba(62, 33, 41, 0.12);
-}
-
-.hada-phone-shell::before {
-  content: "";
-  position: absolute;
-  inset: 14px;
-  border-radius: 32px;
-  border: 1px solid rgba(255, 255, 255, 0.65);
-  pointer-events: none;
-}
-
-.hada-screen {
-  min-height: 820px;
-  background: var(--hada-paper);
-  border: 1px solid rgba(241, 228, 224, 0.9);
-  box-shadow: var(--hada-shadow);
-}
-
-.hada-card {
-  border: 1px solid var(--hada-line);
-  background: var(--hada-paper);
-  border-radius: 24px;
-}
-
-.hada-soft-card {
-  border: 1px solid #f7e8e5;
-  background: linear-gradient(180deg, var(--hada-soft) 0%, #fff3f1 100%);
-  border-radius: 28px;
-}
-
-.hada-label {
-  color: #9f8f96;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-.hada-input {
-  width: 100%;
-  border: 1px solid var(--hada-line);
-  border-radius: 18px;
-  background: var(--hada-paper);
-  padding: 15px 16px;
-  color: var(--hada-ink);
-  font-size: 14px;
-  line-height: 1.5;
-  outline: none;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.hada-input::placeholder {
-  color: #b9aab0;
-}
-
-.hada-input:focus {
-  border-color: #f6b6bb;
-  box-shadow: 0 0 0 4px rgba(255, 127, 134, 0.1);
-}
-
-.hada-primary-button {
-  display: inline-flex;
-  width: 100%;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 9999px;
-  background: linear-gradient(180deg, var(--hada-primary) 0%, var(--hada-primary-dark) 100%);
-  padding: 15px 20px;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
-  box-shadow: 0 18px 30px rgba(255, 127, 134, 0.28);
-}
-
-.hada-secondary-button {
-  display: inline-flex;
-  width: 100%;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--hada-line);
-  border-radius: 9999px;
-  background: var(--hada-paper);
-  padding: 15px 20px;
-  color: var(--hada-ink);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.hada-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 9999px;
-  padding: 8px 12px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.hada-progress-dot {
-  height: 7px;
-  border-radius: 9999px;
-  background: #eadcda;
-  transition: all 0.2s ease;
-}
-
-.hada-progress-dot[data-active="true"] {
-  width: 30px;
-  background: var(--hada-primary);
+input::placeholder,
+textarea::placeholder {
+  color: #9a918e;
 }

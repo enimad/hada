@@ -2,110 +2,116 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import { HadaPortrait } from "@/components/hada-portrait";
-import { Shell } from "@/components/shell";
+import { useEffect, useState, useTransition } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { EyeIcon, EyeOffIcon, LineInput, MainButton, MobileScreen } from "@/components/mobile-screen";
 
 export default function SignupPage() {
   const router = useRouter();
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setEmail(params.get("email") ?? "");
+  }, []);
+
   return (
-    <Shell
-      hideNav
-      backHref="/"
-      title="Creation de compte"
-      subtitle="Hada a besoin de votre compte pour memoriser votre projet mariage et votre progression."
-    >
-      <div className="space-y-6">
-        <div className="hada-soft-card px-5 py-6 text-center">
-          <HadaPortrait size="sm" />
-          <p className="mt-4 text-sm leading-6 text-[var(--hada-muted)]">
-            Vous pourrez ensuite commencer le profilage en quelques etapes simples.
-          </p>
-        </div>
-
-        <form
-          className="space-y-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            startTransition(async () => {
-              setMessage("");
-              const supabase = createSupabaseBrowserClient();
-              const { data, error } = await supabase.auth.signUp({
-                email,
-                password,
-                options: {
-                  emailRedirectTo: `${window.location.origin}/login?confirmed=1`,
-                  data: {
-                    first_name: firstName,
-                    last_name: lastName
-                  }
-                }
-              });
-
-              if (error) {
-                setMessage(error.message);
-                return;
-              }
-
-              if (data.session) {
-                router.push("/onboarding");
-                router.refresh();
-                return;
-              }
-
-              setMessage("Compte cree. Verifiez votre email puis connectez-vous pour continuer.");
-            });
-          }}
-        >
-          <FormInput placeholder="Prenom" value={firstName} onChange={setFirstName} />
-          <FormInput placeholder="Nom" value={lastName} onChange={setLastName} />
-          <FormInput placeholder="Email" type="email" value={email} onChange={setEmail} />
-          <FormInput placeholder="Mot de passe" type="password" value={password} onChange={setPassword} />
-
-          <button disabled={isPending} className="hada-primary-button">
-            {isPending ? "Creation..." : "Creer mon compte"}
-          </button>
-
-          {message ? <p className="text-center text-sm text-[var(--hada-muted)]">{message}</p> : null}
-        </form>
-
-        <p className="text-center text-sm text-[#908188]">
-          Deja inscrit ?{" "}
-          <Link href="/login" className="font-semibold text-[var(--hada-ink)]">
-            Connexion
-          </Link>
+    <MobileScreen className="pb-10 pt-10">
+      <div className="pt-6 text-center">
+        <h1 className="text-[40px] font-bold tracking-[-0.06em] text-[var(--hada-navy)] sm:text-[56px]">Inscris-toi</h1>
+        <p className="mx-auto mt-10 max-w-[320px] text-[18px] font-medium leading-[1.25] tracking-[-0.04em] text-[var(--hada-navy)] sm:max-w-[360px] sm:text-[22px]">
+          Ta premiere analyse t&apos;attend... connecte-toi pour la decouvrir
         </p>
       </div>
-    </Shell>
-  );
-}
 
-function FormInput({
-  placeholder,
-  value,
-  onChange,
-  type = "text"
-}: {
-  placeholder: string;
-  value: string;
-  onChange: (value: string) => void;
-  type?: string;
-}) {
-  return (
-    <input
-      className="hada-input"
-      placeholder={placeholder}
-      type={type}
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-    />
+      <form
+        className="mt-12"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!acceptedTerms) return;
+
+          startTransition(async () => {
+            setMessage("");
+            const supabase = createSupabaseBrowserClient();
+            const { data, error } = await supabase.auth.signUp({
+              email,
+              password,
+              options: {
+                emailRedirectTo: `${window.location.origin}/login?confirmed=1`
+              }
+            });
+
+            if (error) {
+              setMessage(error.message);
+              return;
+            }
+
+            if (data.session) {
+              router.push("/signup/success");
+              return;
+            }
+
+            setMessage("Compte cree. Verifiez votre email puis connectez-vous pour continuer.");
+          });
+        }}
+      >
+        <div className="space-y-8">
+          <LineInput label="Ton adresse mail" value={email} onChange={setEmail} placeholder="hada@gmail.com" type="email" inputMode="email" />
+          <LineInput
+            label="Ton mot de passe"
+            value={password}
+            onChange={setPassword}
+            type={showPassword ? "text" : "password"}
+            placeholder="***********"
+            rightSlot={
+              <button type="button" onClick={() => setShowPassword((current) => !current)} className="text-[#8f8884]">
+                {showPassword ? <EyeOffIcon className="h-7 w-7" /> : <EyeIcon className="h-7 w-7" />}
+              </button>
+            }
+          />
+        </div>
+
+        <label className="mt-12 flex items-start gap-4">
+          <button
+            type="button"
+            onClick={() => setAcceptedTerms((current) => !current)}
+            className={`mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border ${
+              acceptedTerms ? "border-[var(--hada-coral)] bg-[#fff0f1]" : "border-[#d0c7c2] bg-transparent"
+            }`}
+          >
+            {acceptedTerms ? <span className="h-3 w-3 rounded-full bg-[var(--hada-coral)]" /> : null}
+          </button>
+          <span className="text-[16px] font-medium leading-[1.4] tracking-[-0.03em] text-[#8a817d] sm:text-[18px]">
+            En creant un compte, vous acceptez{" "}
+            <Link href="https://hada.framer.website/cgu" target="_blank" rel="noreferrer" className="underline">
+              nos conditions generales d&apos;utilisation.
+            </Link>
+          </span>
+        </label>
+
+        <div className="mt-10">
+          <MainButton type="submit" disabled={!acceptedTerms || !email || !password || isPending}>
+            Je continue
+          </MainButton>
+        </div>
+
+        {message ? (
+          <div className="mt-5 rounded-[22px] border border-[#ffd4d8] bg-[#fff1f3] px-5 py-4 text-center">
+            <p className="text-[14px] font-semibold text-[var(--hada-navy)]">{message}</p>
+            <Link
+              href={`/login?email=${encodeURIComponent(email)}`}
+              className="mt-4 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-semibold text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]"
+            >
+              Aller a la connexion
+            </Link>
+          </div>
+        ) : null}
+      </form>
+    </MobileScreen>
   );
 }
