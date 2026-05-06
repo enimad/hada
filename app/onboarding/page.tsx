@@ -43,6 +43,7 @@ export default function OnboardingPage() {
   const [noPlaceYet, setNoPlaceYet] = useState(false);
   const [noGuestListYet, setNoGuestListYet] = useState(false);
   const [noBudgetYet, setNoBudgetYet] = useState(false);
+  const [citySuggestions, setCitySuggestions] = useState<string[]>([]);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
@@ -54,8 +55,7 @@ export default function OnboardingPage() {
       } = await supabase.auth.getSession();
 
       if (!session) {
-        setIsPreviewMode(true);
-        setIsLoading(false);
+        router.replace("/404");
         return;
       }
 
@@ -81,17 +81,63 @@ export default function OnboardingPage() {
             placeIdeas: result.profile.city ? result.profile.city.split(",").map((item) => item.trim()).filter(Boolean) : []
           });
           setNoDateYet(Boolean(result.profile.wedding_period_text));
+          setNoPlaceYet(!result.profile.city && !result.profile.region);
+          setNoGuestListYet(!result.profile.guest_count);
+          setNoBudgetYet(!result.profile.budget_max);
         }
       }
 
       setIsLoading(false);
     }
 
-    loadProfile();
-  }, []);
+    void loadProfile();
+  }, [router]);
+
+  useEffect(() => {
+    const query = form.placeDraft.trim();
+    if (query.length < 2 || noPlaceYet) {
+      setCitySuggestions([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(query)}&fields=nom,departement&boost=population&limit=8`,
+          { signal: controller.signal }
+        );
+
+        if (!response.ok) return;
+        const result = (await response.json()) as Array<{ nom: string; departement?: { nom?: string } }>;
+        const suggestions = result
+          .map((item) => (item.departement?.nom ? `${item.nom} (${item.departement.nom})` : item.nom))
+          .filter(Boolean);
+        setCitySuggestions(Array.from(new Set(suggestions)));
+      } catch {}
+    }, 180);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [form.placeDraft, noPlaceYet]);
 
   const formattedDate = form.weddingDate ? formatDateFr(form.weddingDate) : "";
   const canSubmitPlaces = form.placeIdeas.length > 0 || form.placeDraft.trim().length > 0 || noPlaceYet;
+
+  function addPlaceIdea() {
+    const nextPlace = form.placeDraft.trim();
+    if (!nextPlace) return;
+
+    setNoPlaceYet(false);
+    setForm((current) => ({
+      ...current,
+      placeIdeas: current.placeIdeas.includes(nextPlace) ? current.placeIdeas : [...current.placeIdeas, nextPlace],
+      placeDraft: ""
+    }));
+    setCitySuggestions([]);
+  }
 
   const content = useMemo(() => {
     if (step === -1) {
@@ -100,7 +146,7 @@ export default function OnboardingPage() {
           <div className="pt-16 text-center sm:pt-20">
             <HadaPortrait variant="rays" className="max-w-[220px] sm:max-w-[250px]" />
             <p className="mx-auto mt-12 max-w-[340px] text-[24px] font-medium leading-[1.35] tracking-[-0.045em] text-[var(--hada-navy)] sm:text-[30px]">
-              Je vais avoir besoin que tu repondes a quelques questions avant de commencer l&apos;organisation
+              Je vais avoir besoin que tu répondes à quelques questions avant de commencer l&apos;organisation.
             </p>
           </div>
           <div className="pb-8">
@@ -113,14 +159,14 @@ export default function OnboardingPage() {
     if (step === 0) {
       return (
         <>
-          <HeaderProgress current={1} total={5} backHref="/signup/success" />
+          <HeaderProgress current={1} total={5} onBack={() => setStep(-1)} />
           <h1 className="mt-10 text-center text-[40px] font-bold leading-[1.02] tracking-[-0.06em] text-[var(--hada-navy)] sm:text-[56px]">
             Votre histoire
             <br />
             commence ici...
           </h1>
           <div className="mt-12 space-y-10">
-            <FieldShell label="Nom marie(e) 1" icon={<HeartIcon className="h-7 w-7" />}>
+            <FieldShell label="Nom marié(e) 1" icon={<HeartIcon className="h-7 w-7" />}>
               <input
                 value={form.partnerOneName}
                 onChange={(event) => setForm((current) => ({ ...current, partnerOneName: event.target.value }))}
@@ -128,7 +174,7 @@ export default function OnboardingPage() {
                 className="w-full bg-transparent text-[20px] text-[var(--hada-navy)] outline-none placeholder:text-[#8f8884] sm:text-[22px]"
               />
             </FieldShell>
-            <FieldShell label="Nom marie(e) 2" icon={<HeartIcon className="h-7 w-7" />}>
+            <FieldShell label="Nom marié(e) 2" icon={<HeartIcon className="h-7 w-7" />}>
               <input
                 value={form.partnerTwoName}
                 onChange={(event) => setForm((current) => ({ ...current, partnerTwoName: event.target.value }))}
@@ -183,13 +229,14 @@ export default function OnboardingPage() {
                 ref={datePickerRef}
                 type="date"
                 value={form.weddingDate}
-                onChange={(event) =>
+                onChange={(event) => {
+                  setNoDateYet(false);
                   setForm((current) => ({
                     ...current,
                     weddingDate: event.target.value,
                     weddingPeriodText: ""
-                  }))
-                }
+                  }));
+                }}
                 className="sr-only"
               />
             </FieldShell>
@@ -199,11 +246,12 @@ export default function OnboardingPage() {
             checked={noDateYet}
             label="Pas encore de date fixe"
             onToggle={() => {
-              setNoDateYet((current) => !current);
+              const nextChecked = !noDateYet;
+              setNoDateYet(nextChecked);
               setForm((current) => ({
                 ...current,
-                weddingDate: !noDateYet ? "" : current.weddingDate,
-                weddingPeriodText: !noDateYet ? "Pas encore de date fixe" : ""
+                weddingDate: nextChecked ? "" : current.weddingDate,
+                weddingPeriodText: nextChecked ? "Pas encore de date fixe" : ""
               }));
             }}
           />
@@ -221,28 +269,19 @@ export default function OnboardingPage() {
         <>
           <HeaderProgress current={3} total={5} onBack={() => setStep(1)} />
           <h1 className="mt-12 text-center text-[40px] font-bold leading-[1.02] tracking-[-0.06em] text-[var(--hada-navy)] sm:text-[54px]">
-            Une idee du lieu ?
+            Une idée du lieu ?
           </h1>
           <p className="mx-auto mt-2 max-w-[320px] text-center text-[18px] font-medium leading-[1.3] tracking-[-0.04em] text-[var(--hada-navy)] sm:text-[22px]">
-            Ajoutes autant de lieux que tu as en tete
+            Ajoute autant de lieux que tu as en tête.
           </p>
           <div className="mt-14">
             <FieldShell
-              label="Vos idees de lieu"
+              label="Vos idées de lieu"
               icon={<MapPinIcon className="h-7 w-7" />}
               rightSlot={
                 <button
                   type="button"
-                  onClick={() => {
-                    const nextPlace = form.placeDraft.trim();
-                    if (!nextPlace) return;
-
-                    setForm((current) => ({
-                      ...current,
-                      placeIdeas: current.placeIdeas.includes(nextPlace) ? current.placeIdeas : [...current.placeIdeas, nextPlace],
-                      placeDraft: ""
-                    }));
-                  }}
+                  onClick={addPlaceIdea}
                   className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 border-[var(--hada-coral)] text-[var(--hada-coral)]"
                 >
                   <PlusIcon className="h-6 w-6" />
@@ -251,10 +290,25 @@ export default function OnboardingPage() {
             >
               <input
                 value={form.placeDraft}
-                onChange={(event) => setForm((current) => ({ ...current, placeDraft: event.target.value }))}
-                placeholder="Paris, campagne"
+                onChange={(event) => {
+                  setNoPlaceYet(false);
+                  setForm((current) => ({ ...current, placeDraft: event.target.value }));
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addPlaceIdea();
+                  }
+                }}
+                list="hada-city-suggestions"
+                placeholder="Paris, Toulouse, Bordeaux..."
                 className="w-full bg-transparent text-[20px] text-[var(--hada-navy)] outline-none placeholder:text-[#8f8884] sm:text-[22px]"
               />
+              <datalist id="hada-city-suggestions">
+                {citySuggestions.map((suggestion) => (
+                  <option key={suggestion} value={suggestion} />
+                ))}
+              </datalist>
             </FieldShell>
           </div>
           {form.placeIdeas.length > 0 ? (
@@ -269,11 +323,13 @@ export default function OnboardingPage() {
           <ToggleRow
             className="mt-10"
             checked={noPlaceYet}
-            label="Pas encore de lieu en tete"
+            label="Pas encore de lieu en tête"
             onToggle={() => {
-              setNoPlaceYet((current) => !current);
-              if (!noPlaceYet) {
+              const nextChecked = !noPlaceYet;
+              setNoPlaceYet(nextChecked);
+              if (nextChecked) {
                 setForm((current) => ({ ...current, placeDraft: "", placeIdeas: [] }));
+                setCitySuggestions([]);
               }
             }}
           />
@@ -282,13 +338,7 @@ export default function OnboardingPage() {
               disabled={!canSubmitPlaces}
               onClick={() => {
                 if (form.placeDraft.trim()) {
-                  setForm((current) => ({
-                    ...current,
-                    placeIdeas: current.placeIdeas.includes(current.placeDraft.trim())
-                      ? current.placeIdeas
-                      : [...current.placeIdeas, current.placeDraft.trim()],
-                    placeDraft: ""
-                  }));
+                  addPlaceIdea();
                 }
                 setStep(3);
               }}
@@ -310,10 +360,13 @@ export default function OnboardingPage() {
             vous serez ?
           </h1>
           <div className="mt-16">
-            <FieldShell label="Environ ..." icon={<UsersIcon className="h-7 w-7" />}>
+            <FieldShell label="Environ..." icon={<UsersIcon className="h-7 w-7" />}>
               <input
                 value={form.guestCount}
-                onChange={(event) => setForm((current) => ({ ...current, guestCount: event.target.value.replace(/[^\d]/g, "") }))}
+                onChange={(event) => {
+                  setNoGuestListYet(false);
+                  setForm((current) => ({ ...current, guestCount: event.target.value.replace(/[^\d]/g, "") }));
+                }}
                 placeholder="100"
                 inputMode="numeric"
                 className="w-full bg-transparent text-[20px] text-[var(--hada-navy)] outline-none placeholder:text-[#8f8884] sm:text-[22px]"
@@ -323,10 +376,11 @@ export default function OnboardingPage() {
           <ToggleRow
             className="mt-10"
             checked={noGuestListYet}
-            label="Pas encore de liste precise"
+            label="Pas encore de liste précise"
             onToggle={() => {
-              setNoGuestListYet((current) => !current);
-              if (!noGuestListYet) {
+              const nextChecked = !noGuestListYet;
+              setNoGuestListYet(nextChecked);
+              if (nextChecked) {
                 setForm((current) => ({ ...current, guestCount: "" }));
               }
             }}
@@ -347,10 +401,13 @@ export default function OnboardingPage() {
           Un budget ?
         </h1>
         <div className="mt-16">
-          <FieldShell label="Environ ..." icon={<WalletIcon className="h-7 w-7" />}>
+          <FieldShell label="Environ..." icon={<WalletIcon className="h-7 w-7" />}>
             <input
               value={form.budgetMax}
-              onChange={(event) => setForm((current) => ({ ...current, budgetMax: formatBudgetInput(event.target.value) }))}
+              onChange={(event) => {
+                setNoBudgetYet(false);
+                setForm((current) => ({ ...current, budgetMax: formatBudgetInput(event.target.value) }));
+              }}
               placeholder="10 000 EUR"
               inputMode="numeric"
               className="w-full bg-transparent text-[20px] text-[var(--hada-navy)] outline-none placeholder:text-[#8f8884] sm:text-[22px]"
@@ -360,10 +417,11 @@ export default function OnboardingPage() {
         <ToggleRow
           className="mt-10"
           checked={noBudgetYet}
-          label="Pas encore de budget definit"
+          label="Pas encore de budget défini"
           onToggle={() => {
-            setNoBudgetYet((current) => !current);
-            if (!noBudgetYet) {
+            const nextChecked = !noBudgetYet;
+            setNoBudgetYet(nextChecked);
+            if (nextChecked) {
               setForm((current) => ({ ...current, budgetMax: "" }));
             }
           }}
@@ -377,7 +435,7 @@ export default function OnboardingPage() {
                 : form.placeIdeas;
 
               if (!accessToken) {
-                router.push("/onboarding/loading");
+                router.replace("/chat");
                 return;
               }
 
@@ -413,7 +471,7 @@ export default function OnboardingPage() {
                   return;
                 }
 
-                router.push("/onboarding/loading");
+                router.replace("/chat");
               });
             }}
           >
@@ -425,6 +483,7 @@ export default function OnboardingPage() {
   }, [
     accessToken,
     canSubmitPlaces,
+    citySuggestions,
     form,
     formattedDate,
     isPending,
@@ -456,17 +515,15 @@ export default function OnboardingPage() {
 function HeaderProgress({
   current,
   total,
-  backHref,
   onBack
 }: {
   current: number;
   total: number;
-  backHref?: "/signup/success";
   onBack?: () => void;
 }) {
   return (
     <div className="flex items-center justify-between">
-      {backHref ? <BackButton href={backHref} /> : <BackButton onClick={onBack} />}
+      <BackButton onClick={onBack} />
       <ProgressDots current={current} total={total} />
       <span className="w-12" />
     </div>

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -17,7 +18,7 @@ export default function LoginPage() {
     const params = new URLSearchParams(window.location.search);
     setEmail(params.get("email") ?? "");
     if (params.get("confirmed") === "1") {
-      setMessage("Email confirme. Vous pouvez maintenant vous connecter.");
+      setMessage("Email confirmé. Vous pouvez maintenant vous connecter.");
     }
   }, []);
 
@@ -26,7 +27,7 @@ export default function LoginPage() {
       <div className="pt-6 text-center">
         <h1 className="text-[40px] font-bold tracking-[-0.06em] text-[var(--hada-navy)] sm:text-[56px]">Connecte-toi</h1>
         <p className="mx-auto mt-10 max-w-[320px] text-[18px] font-medium leading-[1.25] tracking-[-0.04em] text-[var(--hada-navy)] sm:max-w-[360px] sm:text-[22px]">
-          Ta premiere analyse t&apos;attend... connecte-toi pour la decouvrir
+          Ta première analyse t&apos;attend... connecte-toi pour la découvrir
         </p>
       </div>
 
@@ -44,7 +45,7 @@ export default function LoginPage() {
               return;
             }
 
-            router.push("/login/loading");
+            router.replace("/auth/continue");
           });
         }}
       >
@@ -70,7 +71,16 @@ export default function LoginPage() {
           </MainButton>
         </div>
 
-        {message ? <p className="mt-4 text-center text-[14px] text-[#8d8387]">{message}</p> : null}
+        {message ? <p className="mt-4 text-center text-[14px] font-medium text-[var(--hada-coral)]">{message}</p> : null}
+        <div className="mt-8 text-center">
+          <p className="text-[15px] text-[#7c7379]">Vous n’avez pas encore de compte Hada ?</p>
+          <Link
+            href={email ? `/signup?email=${encodeURIComponent(email)}` : "/signup"}
+            className="mt-3 inline-flex h-12 items-center justify-center rounded-full border border-[#eadfda] bg-white px-5 text-[15px] font-semibold text-[var(--hada-navy)]"
+          >
+            Créer un compte
+          </Link>
+        </div>
       </form>
     </MobileScreen>
   );

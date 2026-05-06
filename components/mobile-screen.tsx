@@ -47,6 +47,19 @@ export function HadaWordmark({ className = "" }: { className?: string }) {
   );
 }
 
+export function HadaMark({ className = "" }: { className?: string }) {
+  return (
+    <Image
+      src="/brand/hada-portrait-circle.png"
+      alt="Hada"
+      width={64}
+      height={64}
+      priority
+      className={`h-9 w-9 rounded-full object-cover ${className}`}
+    />
+  );
+}
+
 export function HadaPortrait({
   variant = "circle",
   className = ""
@@ -298,6 +311,42 @@ export function MicIcon({ className = "" }: { className?: string }) {
       <rect x="9" y="3" width="6" height="12" rx="3" />
       <path d="M5 11a7 7 0 0 0 14 0" />
       <path d="M12 18v3" />
+    </svg>
+  );
+}
+
+export function SearchIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4 4" />
+    </svg>
+  );
+}
+
+export function SparkIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="m12 2 1.7 5.1L19 8.8l-5.3 1.7L12 15.6l-1.7-5.1L5 8.8l5.3-1.7L12 2Z" />
+      <path d="m18.5 2.5.8 2.3 2.2.8-2.2.7-.8 2.3-.7-2.3-2.3-.7 2.3-.8.7-2.3Z" />
+    </svg>
+  );
+}
+
+export function ThumbsUpIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M7 21H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3" />
+      <path d="M7 12 10.5 3A2 2 0 0 1 14 4.7V8h4.6a2 2 0 0 1 2 2.4l-1.2 7A2 2 0 0 1 17.4 19H7" />
+    </svg>
+  );
+}
+
+export function ThumbsDownIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M17 3h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3" />
+      <path d="m17 12-3.5 9A2 2 0 0 1 10 19.3V16H5.4a2 2 0 0 1-2-2.4l1.2-7A2 2 0 0 1 6.6 5H17" />
     </svg>
   );
 }

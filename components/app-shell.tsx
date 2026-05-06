@@ -10,6 +10,8 @@ type AppShellProps = {
   children: ReactNode;
   active: "chat" | "wedding" | "vendors";
   mobileTitle?: string;
+  mobileTitleNode?: ReactNode;
+  mobileRightSlot?: ReactNode;
 };
 
 const navItems = [
@@ -18,7 +20,7 @@ const navItems = [
   { key: "vendors", label: "Mes prestataires", href: "/vendors" }
 ] as const;
 
-export function AppShell({ children, active, mobileTitle = "Hada" }: AppShellProps) {
+export function AppShell({ children, active, mobileTitle = "Hada", mobileTitleNode, mobileRightSlot }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
@@ -33,13 +35,15 @@ export function AppShell({ children, active, mobileTitle = "Hada" }: AppShellPro
             >
               <MenuIcon className="h-6 w-6" />
             </button>
-            <p className="text-[18px] font-semibold tracking-[-0.03em] text-[var(--hada-navy)]">{mobileTitle}</p>
-            <span className="w-11" />
+            <div className="flex min-w-0 flex-1 items-center justify-center px-3">
+              {mobileTitleNode ?? <p className="truncate text-[18px] font-semibold tracking-[-0.03em] text-[var(--hada-navy)]">{mobileTitle}</p>}
+            </div>
+            <div className="flex w-11 justify-end">{mobileRightSlot ?? <span className="w-11" />}</div>
           </div>
 
           <div className="mx-auto hidden w-full max-w-6xl items-center justify-between px-6 py-4 lg:px-8 md:flex">
             <Link href="/chat" className="flex items-center gap-3">
-              <HadaWordmark className="max-w-[140px]" />
+              <HadaWordmark className="max-w-[108px] lg:max-w-[118px]" />
               <span className="rounded-full bg-[#fff0f1] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--hada-coral)]">
                 Beta
               </span>

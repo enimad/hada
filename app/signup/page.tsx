@@ -25,7 +25,7 @@ export default function SignupPage() {
       <div className="pt-6 text-center">
         <h1 className="text-[40px] font-bold tracking-[-0.06em] text-[var(--hada-navy)] sm:text-[56px]">Inscris-toi</h1>
         <p className="mx-auto mt-10 max-w-[320px] text-[18px] font-medium leading-[1.25] tracking-[-0.04em] text-[var(--hada-navy)] sm:max-w-[360px] sm:text-[22px]">
-          Ta premiere analyse t&apos;attend... connecte-toi pour la decouvrir
+          Ta première analyse t&apos;attend... connecte-toi pour la découvrir
         </p>
       </div>
 
@@ -37,26 +37,29 @@ export default function SignupPage() {
 
           startTransition(async () => {
             setMessage("");
-            const supabase = createSupabaseBrowserClient();
-            const { data, error } = await supabase.auth.signUp({
-              email,
-              password,
-              options: {
-                emailRedirectTo: `${window.location.origin}/login?confirmed=1`
-              }
+            const signupResponse = await fetch("/api/auth/signup", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({ email, password })
             });
 
+            const signupResult = await signupResponse.json();
+            if (!signupResponse.ok) {
+              setMessage(signupResult.error ?? "Impossible de créer le compte.");
+              return;
+            }
+
+            const supabase = createSupabaseBrowserClient();
+            const { error } = await supabase.auth.signInWithPassword({ email, password });
+
             if (error) {
-              setMessage(error.message);
+              setMessage("Compte créé, mais la connexion automatique a échoué. Essayez de vous connecter.");
               return;
             }
 
-            if (data.session) {
-              router.push("/signup/success");
-              return;
-            }
-
-            setMessage("Compte cree. Verifiez votre email puis connectez-vous pour continuer.");
+            router.replace("/onboarding");
           });
         }}
       >
@@ -87,9 +90,9 @@ export default function SignupPage() {
             {acceptedTerms ? <span className="h-3 w-3 rounded-full bg-[var(--hada-coral)]" /> : null}
           </button>
           <span className="text-[16px] font-medium leading-[1.4] tracking-[-0.03em] text-[#8a817d] sm:text-[18px]">
-            En creant un compte, vous acceptez{" "}
+            En créant un compte, vous acceptez{" "}
             <Link href="https://hada.framer.website/cgu" target="_blank" rel="noreferrer" className="underline">
-              nos conditions generales d&apos;utilisation.
+              nos conditions générales d&apos;utilisation.
             </Link>
           </span>
         </label>
@@ -100,15 +103,19 @@ export default function SignupPage() {
           </MainButton>
         </div>
 
+        <div className="mt-5 text-center">
+          <p className="text-[14px] font-medium text-[#8a817d]">Vous avez déjà un compte Hada ?</p>
+          <Link
+            href={email ? `/login?email=${encodeURIComponent(email)}` : "/login"}
+            className="mt-3 inline-flex h-11 items-center justify-center rounded-full border border-[#eadfda] bg-white px-5 text-[14px] font-semibold text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]"
+          >
+            Se connecter
+          </Link>
+        </div>
+
         {message ? (
           <div className="mt-5 rounded-[22px] border border-[#ffd4d8] bg-[#fff1f3] px-5 py-4 text-center">
             <p className="text-[14px] font-semibold text-[var(--hada-navy)]">{message}</p>
-            <Link
-              href={`/login?email=${encodeURIComponent(email)}`}
-              className="mt-4 inline-flex h-11 items-center justify-center rounded-full bg-white px-5 text-[14px] font-semibold text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]"
-            >
-              Aller a la connexion
-            </Link>
           </div>
         ) : null}
       </form>

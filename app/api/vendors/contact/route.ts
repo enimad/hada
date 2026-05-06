@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildContactMailto, ensureActiveConversation, insertConversationMessage } from "@/lib/server/hada";
+import { buildContactDraft, buildContactMailto, ensureActiveConversation, insertConversationMessage } from "@/lib/server/hada";
 import { getAuthenticatedUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -12,6 +12,7 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
     const candidateId = typeof body.candidateId === "string" ? body.candidateId : "";
+    const previewOnly = body.preview === true;
 
     if (!candidateId) {
       return NextResponse.json({ error: "Missing candidateId" }, { status: 400 });
@@ -29,29 +30,42 @@ export async function POST(request: NextRequest) {
     const candidateView = {
       id: candidate.id,
       slug: candidate.metadata_json?.slug ?? candidate.name.toLowerCase().replace(/\s+/g, "-"),
-      name: candidate.name,
-      category: candidate.category,
-      website: candidate.website,
-      email: candidate.email,
-      phone: candidate.phone,
+      name: candidate.metadata_json?.vendor_profile?.identity?.name ?? candidate.name,
+      category: candidate.metadata_json?.vendor_profile?.identity?.category ?? candidate.category,
+      website: candidate.metadata_json?.vendor_profile?.contact?.website_url ?? candidate.metadata_json?.vendor_profile?.identity?.website_url ?? candidate.website,
+      email: candidate.metadata_json?.vendor_profile?.contact?.email ?? candidate.email,
+      phone: candidate.metadata_json?.vendor_profile?.contact?.phone ?? candidate.phone,
       city: candidate.city,
       region: candidate.region,
-      priceRange: candidate.price_range,
+      priceRange: candidate.metadata_json?.vendor_profile?.logistics?.price_range ?? candidate.price_range,
       score: candidate.score ? Number(candidate.score) : null,
-      summary: candidate.summary,
+      summary: candidate.metadata_json?.vendor_profile?.summary?.about ?? candidate.summary,
       sourceUrl: candidate.source_url,
-      image: candidate.metadata_json?.image ?? null,
-      capacity: candidate.metadata_json?.capacity ?? null,
+      image: candidate.metadata_json?.vendor_profile?.media?.photos?.[0] ?? candidate.metadata_json?.image ?? null,
+      capacity: candidate.metadata_json?.vendor_profile?.logistics?.capacity ?? candidate.metadata_json?.capacity ?? null,
       vibe: candidate.metadata_json?.vibe ?? null,
-      rating: candidate.metadata_json?.rating ?? null,
-      reviewsCount: candidate.metadata_json?.reviewsCount ?? null,
-      highlights: Array.isArray(candidate.metadata_json?.highlights) ? candidate.metadata_json.highlights : [],
+      rating: candidate.metadata_json?.vendor_profile?.reviews?.rating ?? candidate.metadata_json?.rating ?? null,
+      reviewsCount: candidate.metadata_json?.vendor_profile?.reviews?.review_count ?? candidate.metadata_json?.reviewsCount ?? null,
+      highlights: Array.isArray(candidate.metadata_json?.vendor_profile?.summary?.strengths)
+        ? candidate.metadata_json.vendor_profile.summary.strengths
+        : Array.isArray(candidate.metadata_json?.highlights)
+          ? candidate.metadata_json.highlights
+          : [],
       tags: Array.isArray(candidate.metadata_json?.tags) ? candidate.metadata_json.tags : [],
       match: candidate.metadata_json?.match ?? null,
-      contactLead: candidate.metadata_json?.contactLead ?? null
+      contactLead: candidate.metadata_json?.vendor_profile?.logistics?.availability ?? candidate.metadata_json?.contactLead ?? null,
+      vendorProfile: candidate.metadata_json?.vendor_profile ?? null
     };
 
+    const emailDraft = buildContactDraft(candidateView, profile);
     const mailtoUrl = buildContactMailto(candidateView, profile);
+
+    if (previewOnly) {
+      return NextResponse.json({
+        mailtoUrl,
+        emailDraft
+      });
+    }
 
     const { data: thread, error: threadError } = await supabase
       .from("outreach_threads")
@@ -80,15 +94,16 @@ export async function POST(request: NextRequest) {
     await insertConversationMessage(supabase, {
       conversationId: conversation.id,
       role: "assistant",
-      content: `Prestataire contacte: ${candidate.name}. J'ai prepare un email avec les informations de votre mariage.`,
+      content: `Prestataire contacté : ${candidate.name}. J’ai préparé un brouillon d’email avec les informations de votre mariage.`,
       metadata: {
-        ctaHref: `/venues/${candidateView.slug}`,
+        ctaHref: candidateView.category === "venue" ? `/venues/${candidateView.slug}` : `/vendors/${candidateView.slug}`,
         ctaLabel: "Revoir la fiche prestataire"
       }
     });
 
     return NextResponse.json({
-      mailtoUrl
+      mailtoUrl,
+      emailDraft
     });
   } catch (error) {
     return NextResponse.json(

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import type { ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { AppShell } from "@/components/app-shell";
 import { PencilIcon } from "@/components/mobile-screen";
@@ -18,6 +19,7 @@ type EditableProfile = {
 };
 
 export default function MonMariagePage() {
+  const router = useRouter();
   const [profile, setProfile] = useState<WeddingProfile | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -43,12 +45,17 @@ export default function MonMariagePage() {
       } = await supabase.auth.getSession();
 
       if (!session) {
+        router.replace("/404");
+        return;
+      }
+
+      if (!session) {
         setIsPreviewMode(true);
         setDraft({
           partnerOneName: "Lila",
           partnerTwoName: "Marc",
           weddingDate: "2027-06-13",
-          city: "Campagne pres de Paris",
+          city: "Campagne près de Paris",
           guestCount: "100",
           budgetMax: "10000"
         });
@@ -80,20 +87,28 @@ export default function MonMariagePage() {
       setIsLoading(false);
     }
 
-    loadProfile();
-  }, []);
+    void loadProfile();
+  }, [router]);
 
   const data = useMemo(() => {
     const names = `${draft.partnerOneName || "?"} & ${draft.partnerTwoName || "?"}`;
-    const progress = profile?.profile_completion_score ?? 68;
+    const completionFields = [
+      draft.partnerOneName,
+      draft.partnerTwoName,
+      draft.weddingDate || profile?.wedding_period_text,
+      draft.city || profile?.region,
+      draft.guestCount,
+      draft.budgetMax || profile?.budget_min?.toString()
+    ];
+    const progress = Math.round((completionFields.filter((field) => String(field ?? "").trim().length > 0).length / completionFields.length) * 100);
 
     return {
       names,
       progress,
       weddingDate: draft.weddingDate ? formatDateFr(draft.weddingDate) : profile?.wedding_period_text ?? "Pas encore de date fixe",
-      city: draft.city || "A definir",
-      guestCount: draft.guestCount ? `${draft.guestCount} invites` : "A confirmer",
-      budgetMax: draft.budgetMax ? `${Number(draft.budgetMax).toLocaleString("fr-FR")} EUR` : "A confirmer"
+      city: draft.city || "À définir",
+      guestCount: draft.guestCount ? `${draft.guestCount} invités` : "À confirmer",
+      budgetMax: draft.budgetMax ? `${Number(draft.budgetMax).toLocaleString("fr-FR")} EUR` : "À confirmer"
     };
   }, [draft, profile]);
 
@@ -146,7 +161,7 @@ export default function MonMariagePage() {
 
       setProfile(result.profile);
       setIsEditing(false);
-      setFeedback("Informations mises a jour.");
+      setFeedback("Informations mises à jour.");
     });
   }
 
@@ -175,7 +190,7 @@ export default function MonMariagePage() {
               <h1 className="mt-3 text-[32px] font-bold tracking-[-0.05em] text-[var(--hada-navy)] sm:text-[42px]">{data.names}</h1>
             )}
             <p className="mt-3 max-w-[760px] text-[18px] leading-8 text-[#6d6475] sm:text-[20px]">
-              Retrouve ici toutes les informations partagees pendant l&apos;onboarding. Hada s&apos;appuie dessus pour te guider, rechercher des prestataires et preparer tes prises de contact.
+              Retrouve ici toutes les informations partagées pendant l&apos;onboarding. Hada s&apos;appuie dessus pour te guider, rechercher des prestataires et préparer tes prises de contact.
             </p>
           </div>
         </div>
@@ -185,7 +200,7 @@ export default function MonMariagePage() {
 
         <div className="mt-8 rounded-[24px] bg-[#fff7f4] p-5">
           <div className="flex items-center justify-between gap-4">
-            <p className="text-[16px] font-semibold text-[var(--hada-navy)]">Completion du profil</p>
+            <p className="text-[16px] font-semibold text-[var(--hada-navy)]">Complétion du profil</p>
             <p className="text-[16px] font-semibold text-[var(--hada-navy)]">{data.progress}%</p>
           </div>
           <div className="mt-3 h-3 overflow-hidden rounded-full bg-[#f1e3de]">
@@ -243,7 +258,7 @@ export default function MonMariagePage() {
               value={data.weddingDate}
             />
             <EditableCard
-              label="Lieu vise"
+              label="Lieu visé"
               editing={isEditing}
               input={
                 <input
@@ -255,7 +270,7 @@ export default function MonMariagePage() {
               value={data.city}
             />
             <EditableCard
-              label="Nombre d'invites"
+              label="Nombre d'invités"
               editing={isEditing}
               input={
                 <input
@@ -281,20 +296,11 @@ export default function MonMariagePage() {
           </div>
         </div>
 
-        <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <div className="mt-8">
           <div className="rounded-[24px] border border-[#efe5df] bg-white p-5">
-            <h2 className="text-[22px] font-semibold tracking-[-0.03em] text-[var(--hada-navy)]">Ce que Hada sait deja</h2>
-            <ul className="mt-4 space-y-3 text-[17px] leading-7 text-[#665f72]">
-              <li>Hada personnalise le chat avec vos informations de couple.</li>
-              <li>Chaque recommandation de prestataire depend de votre date, votre budget et votre lieu vise.</li>
-              <li>Les actions de contact seront ensuite journalisees dans l&apos;historique du chat.</li>
-            </ul>
-          </div>
-
-          <div className="rounded-[24px] border border-[#efe5df] bg-white p-5">
-            <h2 className="text-[22px] font-semibold tracking-[-0.03em] text-[var(--hada-navy)]">Prochaine etape suggeree</h2>
+            <h2 className="text-[22px] font-semibold tracking-[-0.03em] text-[var(--hada-navy)]">Prochaine étape suggérée</h2>
             <p className="mt-4 text-[17px] leading-7 text-[#665f72]">
-              Hada recommande de commencer par la recherche de lieu, puis d&apos;enchainer avec les prestataires qui dependent le plus de la date et de la capacite.
+              Hada recommande de commencer par la recherche de lieu, puis d&apos;enchaîner avec les prestataires qui dépendent le plus de la date et de la capacité.
             </p>
             <Link
               href="/chat"

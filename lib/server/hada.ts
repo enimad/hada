@@ -1,7 +1,58 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { buildWeddingSummary } from "@/lib/prompts";
-import type { UiChatMessage, VendorCandidateView, VendorCategory, WeddingProfile } from "@/lib/types";
-import { canLaunchSearch, detectVendorCategory, missingSearchFields, searchVendorCatalog } from "@/lib/vendor-catalog";
+import { buildWeddingSummary, formatBudgetSummary, type PlannerContext } from "@/lib/prompts";
+import type { ChatMessage, UiChatMessage, VendorCandidateView, VendorCategory, WeddingProfile } from "@/lib/types";
+import { searchVendorCatalog, type VendorCatalogEntry } from "@/lib/vendor-catalog";
+import { searchVendorsWithFirecrawl } from "@/lib/server/firecrawl";
+import { NORMALIZER_VERSION, normalizeVendorProfileWithMistral } from "@/lib/server/vendor-profile-normalizer";
+
+const categoryConfig: Record<VendorCategory, { label: string; plural: string; ctaLabel: string }> = {
+  venue: { label: "lieu", plural: "lieux", ctaLabel: "Voir les lieux" },
+  caterer: { label: "traiteur", plural: "traiteurs", ctaLabel: "Voir mes traiteurs" },
+  photographer: { label: "photographe", plural: "photographes", ctaLabel: "Voir mes photographes" },
+  videographer: { label: "vidéaste", plural: "vidéastes", ctaLabel: "Voir mes vidéastes" },
+  dj: { label: "DJ", plural: "DJ", ctaLabel: "Voir mes DJ" },
+  musician: { label: "musicien", plural: "musiciens", ctaLabel: "Voir mes musiciens" },
+  decor: { label: "décorateur", plural: "décorateurs", ctaLabel: "Voir ma décoration" },
+  dress: { label: "robe", plural: "robes", ctaLabel: "Voir mes robes" },
+  suit: { label: "costume", plural: "costumes", ctaLabel: "Voir mes costumes" },
+  flowers: { label: "fleuriste", plural: "fleuristes", ctaLabel: "Voir mes fleuristes" },
+  transport: { label: "transport", plural: "prestataires transport", ctaLabel: "Voir mes transports" }
+};
+
+export type SearchReadyPayload = {
+  category: VendorCategory;
+  location: string | null;
+  style: string | null;
+  constraints: string | null;
+  budget: string | null;
+  searchQuery: string;
+};
+
+export type SearchResultsOutcome = {
+  request: unknown | null;
+  candidates: VendorCatalogEntry[];
+  fromCache: boolean;
+  mode: "cache" | "strict" | "expanded" | "external_fallback";
+  externalSearchUrl?: string;
+};
+
+type SearchOptions = {
+  skipCache?: boolean;
+  expandedOnly?: boolean;
+};
+
+const SEARCH_QUOTA_LIMIT = 2;
+const SEARCH_QUOTA_WINDOW_HOURS = 48;
+const SEARCH_QUOTA_WINDOW_MS = SEARCH_QUOTA_WINDOW_HOURS * 60 * 60 * 1000;
+const SEARCH_QUOTA_MARKER = { beta_search_quota: "v1" };
+
+export type SearchQuotaStatus = {
+  limit: number;
+  used: number;
+  remaining: number;
+  resetAt: string | null;
+  isBlocked: boolean;
+};
 
 export async function ensureActiveConversation(supabase: SupabaseClient, userId: string) {
   const { data: existing } = await supabase
@@ -44,6 +95,7 @@ export async function listConversationMessages(supabase: SupabaseClient, convers
     content: message.content,
     ctaHref: message.metadata_json?.ctaHref ?? undefined,
     ctaLabel: message.metadata_json?.ctaLabel ?? undefined,
+    ctaAction: message.metadata_json?.action ?? undefined,
     createdAt: message.created_at
   }));
 }
@@ -78,6 +130,7 @@ export async function insertConversationMessage(
     content: data.content,
     ctaHref: data.metadata_json?.ctaHref ?? undefined,
     ctaLabel: data.metadata_json?.ctaLabel ?? undefined,
+    ctaAction: data.metadata_json?.action ?? undefined,
     createdAt: data.created_at
   } satisfies UiChatMessage;
 }
@@ -92,12 +145,12 @@ export function buildInitialAssistantMessages(profile: Partial<WeddingProfile> |
   return [
     {
       role: "assistant",
-      content: `${partnerLabel} - Synthese\nJe relis votre profil mariage : ${summary}.`
+      content: `${partnerLabel} - Synthèse\nJe relis votre profil mariage : ${summary}.`
     },
     {
       role: "assistant",
       content:
-        "Je vais vous guider prestataire par prestataire. En general, le point de depart le plus structurant est le lieu, car il influence la capacite, le budget et le reste des recommandations."
+        "Je suis là pour vous aider à trouver les bons prestataires, sans vous noyer sous les questions. Dites-moi simplement ce que vous cherchez, et je lance la recherche dès que j'ai l'essentiel."
     }
   ];
 }
@@ -132,127 +185,788 @@ export async function createSearchResultsForUser(
   input: {
     userId: string;
     conversationId: string;
-    category: VendorCategory;
-    query: string;
+    search: SearchReadyPayload;
     profile: Partial<WeddingProfile> | null;
+    options?: SearchOptions;
   }
-) {
-  const candidates = searchVendorCatalog({
-    category: input.category,
-    query: input.query,
-    profile: input.profile
-  });
-
+): Promise<SearchResultsOutcome> {
+  const options = input.options ?? {};
   const requirements = {
+    ...SEARCH_QUOTA_MARKER,
     summary: buildWeddingSummary(input.profile),
-    query: input.query,
-    category: input.category
+    query: input.search.searchQuery,
+    category: input.search.category,
+    location: input.search.location,
+    style: input.search.style,
+    constraints: input.search.constraints,
+    budget: input.search.budget
   };
+  const cachedCandidates = options.skipCache ? [] : await loadCachedCandidatesForUser(supabase, input.userId, input.search.category);
+  const reusableCachedCandidates = filterReusableCachedCandidates(cachedCandidates, input.search, input.profile).slice(0, 3);
+
+  if (!options.skipCache && reusableCachedCandidates.length >= 3) {
+    const { data: request, error: requestError } = await supabase
+      .from("vendor_requests")
+      .insert({
+        user_id: input.userId,
+        conversation_id: input.conversationId,
+        vendor_category: input.search.category,
+        status: "cache_hit",
+        requirements_json: requirements,
+        search_query_text: input.search.searchQuery
+      })
+      .select("*")
+      .single();
+
+    if (requestError) throw requestError;
+
+    return {
+      request,
+      candidates: reusableCachedCandidates,
+      fromCache: true,
+      mode: "cache"
+    };
+  }
 
   const { data: request, error: requestError } = await supabase
     .from("vendor_requests")
     .insert({
       user_id: input.userId,
       conversation_id: input.conversationId,
-      vendor_category: input.category,
-      status: "results_ready",
+      vendor_category: input.search.category,
+      status: "searching",
       requirements_json: requirements,
-      search_query_text: input.query
+      search_query_text: input.search.searchQuery
     })
     .select("*")
     .single();
 
   if (requestError) throw requestError;
 
-  if (candidates.length > 0) {
-    const payload = candidates.map((candidate) => ({
-      vendor_request_id: request.id,
-      name: candidate.name,
-      category: candidate.category,
-      website: candidate.website,
-      email: candidate.email,
-      phone: candidate.phone,
-      city: candidate.city,
-      region: candidate.region,
-      price_range: candidate.priceRange,
-      score: candidate.score,
-      summary: candidate.summary,
-      source_url: candidate.sourceUrl,
-      metadata_json: {
-        slug: candidate.slug,
-        image: candidate.image,
-        capacity: candidate.capacity,
-        vibe: candidate.vibe,
-        rating: candidate.rating,
-        reviewsCount: candidate.reviewsCount,
-        highlights: candidate.highlights,
-        tags: candidate.tags,
-        match: candidate.match,
-        contactLead: candidate.contactLead
-      }
-    }));
+  const firecrawlCandidates = options.expandedOnly
+    ? []
+    : await searchVendorsWithFirecrawl(supabase, {
+        userId: input.userId,
+        category: input.search.category,
+        query: input.search.searchQuery,
+        profile: input.profile,
+        mode: "strict"
+      });
 
-    const { error: candidatesError } = await supabase.from("vendor_candidates").insert(payload);
-    if (candidatesError) throw candidatesError;
+  let candidates = firecrawlCandidates.slice(0, 3);
+  let mode: SearchResultsOutcome["mode"] = "strict";
+
+  if (candidates.length === 0) {
+    const expandedCandidates = await searchVendorsWithFirecrawl(supabase, {
+      userId: input.userId,
+      category: input.search.category,
+      query: buildExpandedSearchQuery(input.search, input.profile),
+      profile: input.profile,
+      mode: "expanded"
+    });
+    candidates = expandedCandidates.slice(0, 3);
+    mode = "expanded";
   }
+
+  if (candidates.length === 0 && canUseCatalogFallback()) {
+    candidates = searchVendorCatalog({
+      category: input.search.category,
+      query: input.search.searchQuery,
+      profile: input.profile
+    }).slice(0, 3);
+  }
+
+  if (candidates.length > 0) {
+    const normalizedCandidates = await Promise.all(
+      candidates.map(async (candidate) => {
+        const normalized = await normalizeVendorProfileWithMistral({
+          candidate,
+          profile: input.profile,
+          search: input.search
+        });
+        return { candidate, normalized };
+      })
+    );
+
+    const usableNormalizedCandidates = normalizedCandidates.filter(({ candidate, normalized }) =>
+      hasUsableNormalizedProfile(candidate, normalized.vendorProfile, normalized.usedFallback)
+    );
+
+    if (usableNormalizedCandidates.length === 0) {
+      await supabase.from("vendor_requests").update({ status: "no_results" }).eq("id", request.id);
+      candidates = [];
+    }
+
+    const payload = usableNormalizedCandidates.map(({ candidate, normalized }) => {
+      const vendorProfile = normalized.vendorProfile;
+      const photos = vendorProfile.media.photos;
+      const website = vendorProfile.contact.website_url ?? vendorProfile.identity.website_url ?? candidate.website;
+      const email = vendorProfile.contact.email ?? candidate.email;
+      const phone = vendorProfile.contact.phone ?? candidate.phone;
+      const location = vendorProfile.identity.location_label || candidate.city || candidate.region;
+
+      return {
+        vendor_request_id: request.id,
+        name: vendorProfile.identity.name || candidate.name,
+        category: vendorProfile.identity.category || candidate.category,
+        website,
+        email,
+        phone,
+        city: location,
+        region: vendorProfile.identity.service_area ?? candidate.region,
+        price_range: vendorProfile.logistics.price_range ?? candidate.priceRange,
+        score: candidate.score,
+        summary: vendorProfile.summary.about ?? candidate.summary,
+        source_url: candidate.sourceUrl,
+        metadata_json: {
+          slug: slugify(vendorProfile.identity.name || candidate.name),
+          vendor_profile: vendorProfile,
+          raw_firecrawl: candidate,
+          normalized_at: new Date().toISOString(),
+          normalizer_version: NORMALIZER_VERSION,
+          normalizer_error: normalized.usedFallback,
+          normalizer_error_message: normalized.error ?? null,
+
+          address: vendorProfile.identity.exact_address ?? candidate.address ?? null,
+          image: photos[0] ?? candidate.image,
+          images: photos.length > 0 ? photos : candidate.images ?? [],
+          capacity: vendorProfile.logistics.capacity ?? candidate.capacity,
+          vibe: inferVibeFromProfile(vendorProfile.category_specific) ?? candidate.vibe,
+          rating: vendorProfile.reviews.rating,
+          reviewsCount: vendorProfile.reviews.review_count,
+          highlights: vendorProfile.summary.strengths,
+          tags: candidate.tags,
+          match: vendorProfile.summary.caveats.length > 0 ? vendorProfile.summary.caveats.join(" · ") : candidate.match,
+          contactLead: vendorProfile.logistics.availability ?? candidate.contactLead,
+          categoryLabel: categoryConfig[candidate.category].label,
+          sourceLabel: candidate.sourceLabel ?? null,
+          sourceType: vendorProfile.quality.generated_from,
+          sourceConfidence: vendorProfile.quality.source_confidence,
+          weddingProof: candidate.specialties ?? null,
+          descriptionLongue: vendorProfile.summary.about,
+          reviewSearchUrl: vendorProfile.reviews.google_reviews_url,
+          reviewSnippets: vendorProfile.reviews.snippets,
+          availability: vendorProfile.logistics.availability,
+          specialties: inferSpecialtiesFromProfile(vendorProfile.category_specific) ?? candidate.specialties,
+          limitations: vendorProfile.summary.caveats,
+          zoneIntervention: vendorProfile.identity.service_area ?? candidate.zoneIntervention ?? null,
+          specific: vendorProfile.category_specific
+        }
+      };
+    });
+
+    if (payload.length > 0) {
+      const { error: candidatesError } = await supabase.from("vendor_candidates").insert(payload);
+      if (candidatesError) throw candidatesError;
+      candidates = usableNormalizedCandidates.map(({ candidate }) => candidate);
+    }
+  }
+
+  await supabase
+    .from("vendor_requests")
+    .update({ status: candidates.length > 0 ? "results_ready" : "no_results" })
+    .eq("id", request.id);
 
   return {
     request,
-    candidates
+    candidates: candidates.slice(0, 3),
+    fromCache: false,
+    mode: candidates.length > 0 ? mode : "external_fallback",
+    externalSearchUrl: candidates.length > 0 ? undefined : buildExternalSearchUrl(input.search, input.profile)
   };
 }
 
-export function extractConversationForModel(messages: UiChatMessage[]) {
+export async function getSearchQuotaStatus(supabase: SupabaseClient, userId: string): Promise<SearchQuotaStatus> {
+  const windowStart = new Date(Date.now() - SEARCH_QUOTA_WINDOW_MS).toISOString();
+  const { data, error } = await supabase
+    .from("vendor_requests")
+    .select("created_at")
+    .eq("user_id", userId)
+    .contains("requirements_json", SEARCH_QUOTA_MARKER)
+    .gte("created_at", windowStart)
+    .order("created_at", { ascending: true });
+
+  if (error) throw error;
+
+  const used = data?.length ?? 0;
+  const oldestSearchAt = data?.[0]?.created_at ? new Date(data[0].created_at).getTime() : null;
+  const resetAt = oldestSearchAt && used >= SEARCH_QUOTA_LIMIT ? new Date(oldestSearchAt + SEARCH_QUOTA_WINDOW_MS).toISOString() : null;
+
+  return {
+    limit: SEARCH_QUOTA_LIMIT,
+    used,
+    remaining: Math.max(SEARCH_QUOTA_LIMIT - used, 0),
+    resetAt,
+    isBlocked: used >= SEARCH_QUOTA_LIMIT
+  };
+}
+
+export async function getMostRecentSearchCategory(supabase: SupabaseClient, userId: string): Promise<VendorCategory | null> {
+  const { data } = await supabase
+    .from("vendor_requests")
+    .select("vendor_category")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return normalizeSearchCategory(data?.vendor_category);
+}
+
+export async function getMostRecentRetryableSearch(supabase: SupabaseClient, userId: string): Promise<SearchReadyPayload | null> {
+  const { data } = await supabase
+    .from("vendor_requests")
+    .select("vendor_category, requirements_json, search_query_text")
+    .eq("user_id", userId)
+    .eq("status", "no_results")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const category = normalizeSearchCategory(data?.vendor_category);
+  if (!category) return null;
+
+  const requirements = (data?.requirements_json ?? {}) as Record<string, unknown>;
+  return {
+    category,
+    location: readOptionalString(requirements.location),
+    style: readOptionalString(requirements.style),
+    constraints: readOptionalString(requirements.constraints),
+    budget: readOptionalString(requirements.budget),
+    searchQuery: readOptionalString(data?.search_query_text) ?? ""
+  };
+}
+
+async function loadCachedCandidatesForUser(supabase: SupabaseClient, userId: string, category: VendorCategory): Promise<VendorCatalogEntry[]> {
+  const { data: requests } = await supabase.from("vendor_requests").select("id").eq("user_id", userId).eq("vendor_category", category);
+  const requestIds = (requests ?? []).map((request) => request.id);
+  if (requestIds.length === 0) return [];
+
+  const { data: candidates } = await supabase
+    .from("vendor_candidates")
+    .select("*")
+    .in("vendor_request_id", requestIds)
+    .eq("category", category)
+    .order("score", { ascending: false })
+    .limit(5);
+
+  return (candidates ?? []).map((candidate) => {
+    const metadata = candidate.metadata_json ?? {};
+    return {
+      id: candidate.id,
+      slug: metadata.slug ?? slugify(candidate.name),
+      name: candidate.name,
+      category: candidate.category as VendorCategory,
+      website: candidate.website,
+      email: candidate.email,
+      phone: candidate.phone,
+      address: metadata.address ?? null,
+      city: candidate.city,
+      region: candidate.region,
+      priceRange: candidate.price_range,
+      priceValue: estimatePriceValue(candidate.price_range),
+      guestCapacity: estimateGuestCapacity(metadata.capacity ?? null),
+      score: candidate.score ? Number(candidate.score) : null,
+      summary: candidate.summary,
+      sourceUrl: candidate.source_url,
+      image: metadata.image ?? null,
+      images: Array.isArray(metadata.images) ? metadata.images : [],
+      capacity: metadata.capacity ?? null,
+      vibe: metadata.vibe ?? null,
+      rating: metadata.rating ?? null,
+      reviewsCount: metadata.reviewsCount ?? null,
+      highlights: Array.isArray(metadata.highlights) ? metadata.highlights : [],
+      tags: Array.isArray(metadata.tags) ? metadata.tags : [],
+      match: metadata.match ?? null,
+      contactLead: metadata.contactLead ?? null,
+      sourceLabel: metadata.sourceLabel ?? "Cache Hada",
+      keywords: [],
+      limitations: Array.isArray(metadata.limitations) ? metadata.limitations : [],
+      reviewSearchUrl: metadata.reviewSearchUrl ?? null,
+      reviewSnippets: Array.isArray(metadata.reviewSnippets) ? metadata.reviewSnippets : [],
+      availability: metadata.availability ?? null,
+      specialties: metadata.specialties ?? null,
+      zoneIntervention: metadata.zoneIntervention ?? null
+    } satisfies VendorCatalogEntry;
+  });
+}
+
+function filterReusableCachedCandidates(
+  candidates: VendorCatalogEntry[],
+  search: SearchReadyPayload,
+  profile: Partial<WeddingProfile> | null
+) {
+  const location = normalize([search.location, profile?.city, profile?.region, profile?.country].filter(Boolean).join(" "));
+  const style = normalize(search.style ?? "");
+  const constraints = normalize(search.constraints ?? "");
+
+  return candidates
+    .filter((candidate) => candidate.category === search.category)
+    .filter((candidate) => (candidate.score ?? 0) >= 45)
+    .filter((candidate) => hasUsableVendorData(candidate))
+    .map((candidate) => ({
+      candidate,
+      relevance: computeCacheRelevance(candidate, { location, style, constraints })
+    }))
+    .filter((item) => item.relevance >= 2)
+    .sort((left, right) => {
+      const scoreDiff = (right.candidate.score ?? 0) - (left.candidate.score ?? 0);
+      return scoreDiff || right.relevance - left.relevance;
+    })
+    .map((item) => item.candidate);
+}
+
+function computeCacheRelevance(
+  candidate: VendorCatalogEntry,
+  input: {
+    location: string;
+    style: string;
+    constraints: string;
+  }
+) {
+  const haystack = normalize(
+    [
+      candidate.name,
+      candidate.city,
+      candidate.region,
+      candidate.zoneIntervention,
+      candidate.summary,
+      candidate.vibe,
+      candidate.specialties,
+      candidate.highlights?.join(" "),
+      candidate.tags?.join(" ")
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+
+  let score = 0;
+  if (!input.location || input.location.split(/\s+/).some((word) => word.length > 2 && haystack.includes(word))) score += 2;
+  if (!input.style || input.style.split(/\s+/).some((word) => word.length > 2 && haystack.includes(word))) score += 1;
+  if (!input.constraints || input.constraints.split(/\s+/).some((word) => word.length > 2 && haystack.includes(word))) score += 1;
+  if (candidate.images?.length || candidate.image) score += 1;
+  if (candidate.website || candidate.email || candidate.phone) score += 1;
+  return score;
+}
+
+function hasUsableVendorData(candidate: VendorCatalogEntry) {
+  const hasContact = Boolean(candidate.website || candidate.email || candidate.phone);
+  const hasContent = Boolean(candidate.summary || candidate.highlights?.length || candidate.specialties);
+  return hasContact && hasContent;
+}
+
+function buildExpandedSearchQuery(search: SearchReadyPayload, profile: Partial<WeddingProfile> | null) {
+  const region = profile?.region ?? profile?.country ?? "France";
+  return [
+    categoryToSearchLabel(search.category),
+    "mariage",
+    search.location ?? region,
+    search.style,
+    region
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+export function buildRetrySearchPayload(search: SearchReadyPayload, profile: Partial<WeddingProfile> | null): SearchReadyPayload {
+  const location = search.location ?? profile?.city ?? profile?.region ?? profile?.country ?? null;
+  const relaxedQuery = [
+    categoryToSearchLabel(search.category),
+    "mariage",
+    location,
+    search.style
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+
+  return {
+    ...search,
+    location,
+    constraints: null,
+    searchQuery: relaxedQuery
+  };
+}
+
+function buildExternalSearchUrl(search: SearchReadyPayload, profile: Partial<WeddingProfile> | null) {
+  const query = [
+    categoryToSearchLabel(search.category),
+    "mariage",
+    search.location ?? profile?.city ?? profile?.region ?? "France",
+    search.style,
+    search.constraints,
+    "avis",
+    "contact"
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
+function categoryToSearchLabel(category: VendorCategory) {
+  switch (category) {
+    case "venue":
+      return "lieu réception";
+    case "caterer":
+      return "traiteur";
+    case "photographer":
+      return "photographe";
+    case "videographer":
+      return "vidéaste";
+    case "dj":
+      return "DJ";
+    case "musician":
+      return "groupe musique live";
+    case "flowers":
+      return "fleuriste";
+    case "decor":
+      return "décoration";
+    case "dress":
+      return "robe de mariée";
+    case "suit":
+      return "costume mariage";
+    case "transport":
+      return "transport mariage";
+  }
+}
+
+function sameDomain(left: string, right: string) {
+  try {
+    return new URL(left).hostname.replace(/^www\./, "") === new URL(right).hostname.replace(/^www\./, "");
+  } catch {
+    return false;
+  }
+}
+
+function estimateSourceConfidence(candidate: VendorCatalogEntry) {
+  let score = 0.4;
+  if (candidate.website) score += 0.2;
+  if (candidate.email || candidate.phone) score += 0.15;
+  if (candidate.images?.length) score += 0.1;
+  if (candidate.rating) score += 0.1;
+  if (candidate.specialties || candidate.summary) score += 0.05;
+  return Math.min(Number(score.toFixed(2)), 1);
+}
+
+function buildCategorySpecificMetadata(candidate: VendorCatalogEntry) {
+  switch (candidate.category) {
+    case "photographer":
+    case "videographer":
+      return {
+        style_photo: candidate.vibe ?? candidate.specialties ?? null,
+        format_livraison: null,
+        delai_livraison: candidate.availability ?? null,
+        materiel: null
+      };
+    case "caterer":
+      return {
+        type_cuisine: candidate.specialties ?? null,
+        options_regime: candidate.limitations?.join(", ") || null,
+        formules: candidate.priceRange ?? null,
+        service_inclus: candidate.highlights?.join(", ") || null,
+        capacite_couverts: candidate.capacity ?? null
+      };
+    case "venue":
+      return {
+        type_lieu: candidate.vibe ?? candidate.specialties ?? null,
+        capacite_min: null,
+        capacite_max: candidate.capacity ?? null,
+        hebergement: null,
+        exclusivite_traiteur: null,
+        parking: null
+      };
+    case "dj":
+    case "musician":
+      return {
+        genres_musicaux: candidate.vibe ?? candidate.specialties ?? null,
+        materiel_sono: null,
+        experience_mariage: candidate.summary ?? null,
+        references: candidate.reviewSnippets?.map((review) => review.text).join(" | ") || null
+      };
+    case "flowers":
+      return {
+        styles_floraux: candidate.vibe ?? candidate.specialties ?? null,
+        livraison_mise_en_place: candidate.availability ?? null,
+        location_vases: null
+      };
+    default:
+      return {
+        description_libre: candidate.summary ?? null
+      };
+  }
+}
+
+function inferVibeFromProfile(specific: Record<string, string | string[] | null>) {
+  return readFirstSpecificValue(specific, [
+    "style",
+    "style_photo",
+    "style_video",
+    "style_musical",
+    "type_lieu",
+    "type_cuisine"
+  ]);
+}
+
+function inferSpecialtiesFromProfile(specific: Record<string, string | string[] | null>) {
+  return readFirstSpecificValue(specific, [
+    "prestations",
+    "service_inclus",
+    "formats",
+    "approche",
+    "experience_mariage",
+    "type_cuisine",
+    "espaces_exterieurs"
+  ]);
+}
+
+function readFirstSpecificValue(specific: Record<string, string | string[] | null>, keys: string[]) {
+  for (const key of keys) {
+    const value = specific[key];
+    if (Array.isArray(value) && value.length > 0) return value.join(", ");
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function hasUsableNormalizedProfile(candidate: VendorCatalogEntry, profile: NonNullable<VendorCandidateView["vendorProfile"]>, usedFallback: boolean) {
+  const hasContactPath = Boolean(profile.contact.email || profile.contact.phone || profile.contact.website_url || candidate.email || candidate.phone || candidate.website);
+  const hasRealContent = Boolean(profile.summary.about && profile.summary.about.length >= 45);
+  const hasLocationSignal = Boolean(profile.identity.exact_address || profile.identity.service_area || profile.identity.location_label || candidate.city || candidate.region);
+  const hasMedia = profile.media.photos.length > 0;
+  const score = candidate.score ?? 0;
+
+  if (!hasContactPath || !hasRealContent) return false;
+
+  // Fallback-only search snippets are allowed when Firecrawl found a real source page with enough factual material.
+  if (usedFallback) {
+    if (score < 25) return false;
+    if (!candidate.email && !candidate.phone && !candidate.website && !profile.contact.website_url) return false;
+  }
+
+  if (candidate.category === "venue") {
+    const hasVenueBasics = hasMedia || Boolean(profile.identity.exact_address) || Boolean(profile.logistics.capacity);
+    if (usedFallback) return Boolean(hasVenueBasics || profile.contact.website_url || candidate.website) && hasLocationSignal;
+    return hasLocationSignal;
+  }
+
+  return hasLocationSignal;
+}
+
+export async function buildPlannerContext(
+  supabase: SupabaseClient,
+  input: {
+    userId: string;
+    messages: UiChatMessage[];
+  }
+): Promise<PlannerContext> {
+  const { data: requests } = await supabase
+    .from("vendor_requests")
+    .select("id, vendor_category, requirements_json, search_query_text, created_at")
+    .eq("user_id", input.userId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  const requestIds = (requests ?? []).map((request) => request.id);
+  const { data: candidates } =
+    requestIds.length > 0
+      ? await supabase.from("vendor_candidates").select("category, metadata_json").in("vendor_request_id", requestIds)
+      : { data: [] };
+
+  const searchedCategories = Array.from(new Set((requests ?? []).map((request) => labelCategory(request.vendor_category)).filter(isString)));
+  const savedCategories = Array.from(new Set((candidates ?? []).map((candidate) => labelCategory(candidate.category)).filter(isString)));
+
+  const requestPreferences = (requests ?? [])
+    .slice(0, 5)
+    .map((request) => {
+      const requirements = request.requirements_json ?? {};
+      return [
+        labelCategory(request.vendor_category),
+        requirements.style ? `style ${requirements.style}` : null,
+        requirements.constraints ? `contraintes ${requirements.constraints}` : null,
+        requirements.budget ? `budget ${requirements.budget}` : null,
+        request.search_query_text ? `requête ${request.search_query_text}` : null
+      ]
+        .filter(Boolean)
+        .join(" : ");
+    })
+    .filter(Boolean);
+
+  const recentUserPreferences = input.messages
+    .filter((message) => message.role === "user")
+    .slice(-6)
+    .map((message) => message.content.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  return {
+    searchedCategories,
+    savedCategories,
+    recentPreferences: [...requestPreferences, ...recentUserPreferences].slice(0, 8)
+  };
+}
+
+export function extractConversationForModel(messages: UiChatMessage[]): ChatMessage[] {
   return messages.map((message) => ({
     role: message.role,
     content: message.content
   }));
 }
 
-export function computeSearchIntent(userText: string, profile: Partial<WeddingProfile> | null) {
-  const category = detectVendorCategory(userText);
+export function buildSearchCta(category: VendorCategory) {
+  const redirectPath = `/vendors?category=${category}`;
   return {
-    category,
-    canLaunch: canLaunchSearch(category, profile),
-    missingFields: missingSearchFields(category, profile)
+    action: "show_vendors",
+    categorie: categoryConfig[category].label,
+    redirect_path: redirectPath,
+    ctaHref: redirectPath,
+    ctaLabel: "Voir les prestataires →"
   };
 }
 
-export function buildSearchAnnouncement(category: VendorCategory, count: number) {
-  if (category === "venue") {
-    return `J'ai trouve ${count} lieux qui semblent bien correspondre a votre mariage. Je vous ai prepare une selection a consulter tout de suite.`;
-  }
-
-  return `J'ai prepare une premiere selection de ${count} prestataires pour cette categorie.`;
+export function getVendorCategoryLabel(category: VendorCategory, count = 1) {
+  const config = categoryConfig[category];
+  return count > 1 ? config.plural : config.label;
 }
 
-export function buildContactMailto(candidate: VendorCandidateView, profile: Partial<WeddingProfile> | null) {
-  const weddingDate = profile?.wedding_date ?? profile?.wedding_period_text ?? "date a confirmer";
+export function normalizeSearchCategory(value: string | null | undefined): VendorCategory | null {
+  const normalized = normalize(value ?? "");
+  if (!normalized) return null;
+
+  const internalCategories: Record<string, VendorCategory> = {
+    venue: "venue",
+    caterer: "caterer",
+    photographer: "photographer",
+    videographer: "videographer",
+    dj: "dj",
+    musician: "musician",
+    flowers: "flowers",
+    decor: "decor",
+    dress: "dress",
+    suit: "suit",
+    transport: "transport"
+  };
+
+  if (internalCategories[normalized]) return internalCategories[normalized];
+
+  if (/(lieu|domaine|chateau|salle|reception|venue)/.test(normalized)) return "venue";
+  if (/(traiteur|restauration|cocktail|diner|wedding cake|wedding_cake|gateau|patisserie)/.test(normalized)) return "caterer";
+  if (/(photographe|photo|photographer)/.test(normalized)) return "photographer";
+  if (/(videaste|video|film|videographer)/.test(normalized)) return "videographer";
+  if (/(dj|disc jockey|mix|platines)/.test(normalized)) return "dj";
+  if (/(groupe|chanteur|chanteuse|chante|jazz|acoustique|piano|guitariste|violoniste|contrebasse|quartet|trio|duo musical|orchestre|musique live|live|musicien|musique)/.test(normalized)) {
+    return "musician";
+  }
+  if (/(fleur|floral|fleuriste)/.test(normalized)) return "flowers";
+  if (/(deco|decoration|scenographie)/.test(normalized)) return "decor";
+  if (/(robe|dress)/.test(normalized)) return "dress";
+  if (/(costume|suit)/.test(normalized)) return "suit";
+  if (/(transport|navette|chauffeur|voiture)/.test(normalized)) return "transport";
+
+  return null;
+}
+
+export function buildContactDraft(candidate: VendorCandidateView, profile: Partial<WeddingProfile> | null) {
+  const weddingDate = profile?.wedding_date ?? profile?.wedding_period_text ?? "date à confirmer";
   const names =
     profile?.partner_one_name || profile?.partner_two_name
-      ? `${profile?.partner_one_name ?? ""} ${profile?.partner_two_name ? `et ${profile.partner_two_name}` : ""}`.trim()
+      ? `${profile?.partner_one_name ?? ""}${profile?.partner_two_name ? ` & ${profile.partner_two_name}` : ""}`.trim()
       : "Nous";
-  const place = profile?.city ?? "lieu a confirmer";
-  const guests = profile?.guest_count ? `${profile.guest_count} invites` : "nombre d'invites a confirmer";
-  const budget =
-    profile?.budget_max || profile?.budget_min
-      ? `${profile?.budget_min ?? ""}${profile?.budget_min && profile?.budget_max ? " - " : ""}${profile?.budget_max ?? ""} EUR`
-      : "budget a confirmer";
+  const place = profile?.city ?? profile?.region ?? "lieu à confirmer";
+  const guests = profile?.guest_count ? `${profile.guest_count} invités` : "nombre d'invités à confirmer";
+  const budget = formatBudgetSummary(profile) ?? "budget à confirmer";
+  const subject = `Demande d'information – Mariage le ${weddingDate} à ${place}`;
+  const intro = `${names} organisons notre mariage le ${weddingDate} à ${place}.`;
+  const categoryLine = contactOpeningByCategory(candidate.category);
 
-  const subject = `Demande d'informations - Mariage ${weddingDate}`;
   const body = [
     "Bonjour,",
     "",
-    `${names} organisons notre mariage pour ${weddingDate}.`,
-    `Lieu envisage: ${place}.`,
-    `Nombre d'invites: ${guests}.`,
-    `Budget indicatif: ${budget}.`,
+    intro,
+    `Nous prévoyons environ ${guests}.`,
+    `Budget indicatif : ${budget}.`,
+    categoryLine,
     "",
-    `Nous aimerions obtenir plus d'informations sur ${candidate.name}, vos disponibilites, vos conditions et vos tarifs.`,
+    `Nous aimerions en savoir plus sur ${candidate.name}, vos disponibilités, vos tarifs et les modalités de collaboration.`,
+    "Si vous êtes disponibles, pouvez-vous nous indiquer les prochaines étapes ?",
     "",
     "Merci beaucoup,",
-    "Bien cordialement"
+    `${names}`
   ].join("\r\n");
 
-  return `mailto:${encodeURIComponent(candidate.email ?? "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  return {
+    to: candidate.email ?? "",
+    subject,
+    body
+  };
+}
+
+export function buildContactMailto(candidate: VendorCandidateView, profile: Partial<WeddingProfile> | null) {
+  const draft = buildContactDraft(candidate, profile);
+  return `mailto:${encodeURIComponent(draft.to)}?subject=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(draft.body)}`;
+}
+
+function slugify(value: string | null | undefined) {
+  const slug = normalize(value ?? "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return slug || "prestataire";
+}
+
+function estimatePriceValue(priceRange: string | null | undefined) {
+  if (!priceRange) return 0;
+  const cleaned = priceRange.replace(/\s/g, "").replace(",", ".");
+  const match = cleaned.match(/\d[\d.]*/);
+  return match ? Number(match[0].replace(/[^\d.]/g, "")) : 0;
+}
+
+function estimateGuestCapacity(capacity: unknown) {
+  if (typeof capacity === "number") return capacity;
+  if (typeof capacity !== "string") return 0;
+  const matches = capacity.match(/\d+/g);
+  return matches ? Number(matches[matches.length - 1]) : 0;
+}
+
+function canUseCatalogFallback() {
+  return !process.env.FIRECRAWL_API_KEY && !process.env.FIRECRAWL_API_KEYS;
+}
+
+function labelCategory(category: string | null | undefined) {
+  const normalized = normalizeSearchCategory(category);
+  return normalized ? categoryConfig[normalized].label : category ?? null;
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function readOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function contactOpeningByCategory(category: VendorCategory) {
+  switch (category) {
+    case "photographer":
+      return "Nous cherchons un regard sensible et naturel pour raconter cette journée.";
+    case "videographer":
+      return "Nous cherchons une vidéo élégante et vivante, fidèle à l'ambiance du jour J.";
+    case "caterer":
+      return "Nous cherchons une proposition gourmande, fluide en service et adaptée à nos contraintes éventuelles.";
+    case "flowers":
+      return "Nous cherchons un univers floral cohérent avec l'ambiance de notre mariage.";
+    default:
+      return "Nous cherchons un prestataire fiable, chaleureux et aligné avec notre mariage.";
+  }
+}
+
+function normalize(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }

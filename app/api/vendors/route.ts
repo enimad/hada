@@ -52,6 +52,7 @@ export async function GET(request: NextRequest) {
       website: candidate.website,
       email: candidate.email,
       phone: candidate.phone,
+      address: candidate.metadata_json?.address ?? null,
       city: candidate.city,
       region: candidate.region,
       priceRange: candidate.price_range,
@@ -59,6 +60,7 @@ export async function GET(request: NextRequest) {
       summary: candidate.summary,
       sourceUrl: candidate.source_url,
       image: candidate.metadata_json?.image ?? null,
+      images: Array.isArray(candidate.metadata_json?.images) ? candidate.metadata_json.images : [],
       capacity: candidate.metadata_json?.capacity ?? null,
       vibe: candidate.metadata_json?.vibe ?? null,
       rating: candidate.metadata_json?.rating ?? null,
@@ -66,10 +68,19 @@ export async function GET(request: NextRequest) {
       highlights: Array.isArray(candidate.metadata_json?.highlights) ? candidate.metadata_json.highlights : [],
       tags: Array.isArray(candidate.metadata_json?.tags) ? candidate.metadata_json.tags : [],
       match: candidate.metadata_json?.match ?? null,
-      contactLead: candidate.metadata_json?.contactLead ?? null
+      contactLead: candidate.metadata_json?.contactLead ?? null,
+      sourceLabel: candidate.metadata_json?.sourceLabel ?? null,
+      reviewSearchUrl: candidate.metadata_json?.reviewSearchUrl ?? null,
+      reviewSnippets: Array.isArray(candidate.metadata_json?.reviewSnippets) ? candidate.metadata_json.reviewSnippets : [],
+      availability: candidate.metadata_json?.availability ?? null,
+      specialties: candidate.metadata_json?.specialties ?? null,
+      limitations: Array.isArray(candidate.metadata_json?.limitations) ? candidate.metadata_json.limitations : [],
+      zoneIntervention: candidate.metadata_json?.zoneIntervention ?? null,
+      vendorProfile: candidate.metadata_json?.vendor_profile ?? null,
+      normalizerError: Boolean(candidate.metadata_json?.normalizer_error)
     }));
 
-    const deduped = dedupeCandidates(normalized);
+    const deduped = dedupeCandidates(normalized.filter(isDisplayableCandidate));
     const filtered = slug ? deduped.filter((candidate) => candidate.slug === slug) : deduped;
     const categories = getVendorCategories().map((item) => ({
       ...item,
@@ -103,10 +114,75 @@ function dedupeCandidates(candidates: VendorCandidateView[]) {
   const seen = new Map<string, VendorCandidateView>();
 
   for (const candidate of candidates) {
-    if (!seen.has(candidate.slug)) {
+    const existing = seen.get(candidate.slug);
+    if (!existing || displayCompletenessScore(candidate) > displayCompletenessScore(existing)) {
       seen.set(candidate.slug, candidate);
     }
   }
 
   return Array.from(seen.values());
+}
+
+function displayCompletenessScore(candidate: VendorCandidateView) {
+  const profile = candidate.vendorProfile;
+  let score = candidate.score ?? 0;
+  if (profile?.media?.photos?.length || candidate.images?.length || candidate.image) score += 18;
+  if (profile?.contact?.email || candidate.email) score += 12;
+  if (profile?.contact?.phone || candidate.phone) score += 10;
+  if (profile?.identity?.exact_address || candidate.address) score += 8;
+  if (profile?.reviews?.snippets?.length || candidate.reviewSnippets?.length) score += 8;
+  if (profile?.logistics?.capacity || candidate.capacity) score += 6;
+  if (profile?.logistics?.price_range || candidate.priceRange) score += 6;
+  if (profile?.summary?.strengths?.length || candidate.highlights?.length) score += 6;
+  if (profile?.summary?.about || candidate.summary) score += 4;
+  if (candidate.normalizerError) score -= 15;
+  return score;
+}
+
+function isGenericDisplayName(value: string | null | undefined) {
+  const normalized = normalize(value ?? "");
+  if (!normalized) return true;
+
+  return [
+    "selection de",
+    "les meilleurs",
+    "top ",
+    "annuaire",
+    "comparatif",
+    "liste de",
+    "10 meilleurs",
+    "meilleurs traiteurs",
+    "meilleurs domaines",
+    "meilleurs prestataires"
+  ].some((pattern) => normalized.startsWith(pattern) || normalized.includes(` ${pattern}`));
+}
+
+function normalize(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isDisplayableCandidate(candidate: VendorCandidateView) {
+  if (isGenericDisplayName(candidate.vendorProfile?.identity?.name ?? candidate.name)) return false;
+
+  const hasContactPath = Boolean(candidate.email || candidate.phone || candidate.website || candidate.vendorProfile?.contact?.website_url);
+  const summary = candidate.vendorProfile?.summary?.about ?? candidate.summary;
+  const hasUsefulSummary = Boolean(summary && summary.length >= 45);
+  if (!hasContactPath || !hasUsefulSummary) return false;
+
+  if ((!candidate.vendorProfile || candidate.normalizerError) && (candidate.score ?? 0) > 0 && (candidate.score ?? 0) < 25) return false;
+
+  if (candidate.category === "venue") {
+    if (candidate.vendorProfile && !candidate.normalizerError) return true;
+    return Boolean((candidate.images?.length ?? 0) > 0 || candidate.address || candidate.capacity || candidate.website || candidate.vendorProfile?.contact?.website_url);
+  }
+
+  return true;
+}
+
+function isTruncatedText(value: string) {
+  const trimmed = value.trim();
+  return /(\.\.\.|…)$/.test(trimmed) || / \.\.\./.test(trimmed);
 }

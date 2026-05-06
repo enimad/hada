@@ -6,8 +6,9 @@ import type { ReactNode } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { ArrowLeftIcon, ThumbsDownIcon, ThumbsUpIcon } from "@/components/mobile-screen";
-import { collectDisplayImageUrls } from "@/lib/image-url";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { collectDisplayImageUrls } from "@/lib/image-url";
+import { getVendorCategories } from "@/lib/vendor-catalog";
 import type { VendorCandidateView } from "@/lib/types";
 
 const BETA_TOAST = "Cette fonctionnalité n'est pas disponible en version bêta.";
@@ -34,11 +35,11 @@ type CandidateInfoItem = {
   allowPlaceholder?: boolean;
 };
 
-export default function VenueDetailPage() {
+export default function VendorDetailPage() {
   const router = useRouter();
   const params = useParams<{ slug: string }>();
   const slug = params.slug;
-  const [venue, setVenue] = useState<VendorCandidateView | null>(null);
+  const [vendor, setVendor] = useState<VendorCandidateView | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [contactMessage, setContactMessage] = useState("");
@@ -48,13 +49,17 @@ export default function VenueDetailPage() {
   const [betaToast, setBetaToast] = useState("");
   const hiddenMailtoRef = useRef<HTMLAnchorElement | null>(null);
 
-  const infoItems = useMemo(() => dedupeInfoItems(buildVenueProfileInfoItems(venue)), [venue]);
-  const websiteUrl = useMemo(() => getDisplayWebsite(venue), [venue]);
-  const reviewSearchUrl = venue?.vendorProfile?.reviews.google_reviews_url ?? venue?.reviewSearchUrl ?? buildReviewSearchUrl(venue);
-  const displayName = venue?.vendorProfile?.identity.name ?? venue?.name;
-  const displayLocation = venue?.vendorProfile?.identity.location_label ?? venue?.city ?? venue?.region ?? "France";
-  const about = venue?.vendorProfile?.summary.about ?? venue?.summary ?? "Fiche prestataire enrichie par Hada.";
-  const strengths = dedupeDisplayStrings(venue?.vendorProfile?.summary.strengths ?? venue?.highlights ?? []);
+  const categoryLabel = useMemo(() => {
+    return getVendorCategories().find((item) => item.key === vendor?.category)?.label ?? "Prestataire";
+  }, [vendor?.category]);
+
+  const infoItems = useMemo(() => dedupeInfoItems(buildProfileInfoItems(vendor, categoryLabel)), [vendor, categoryLabel]);
+  const websiteUrl = useMemo(() => getDisplayWebsite(vendor), [vendor]);
+  const reviewSearchUrl = vendor?.vendorProfile?.reviews.google_reviews_url ?? vendor?.reviewSearchUrl ?? buildReviewSearchUrl(vendor);
+  const displayName = vendor?.vendorProfile?.identity.name ?? vendor?.name;
+  const displayLocation = vendor?.vendorProfile?.identity.location_label ?? vendor?.city ?? vendor?.region ?? "France";
+  const about = vendor?.vendorProfile?.summary.about ?? vendor?.summary ?? "Fiche prestataire enrichie par Hada.";
+  const strengths = dedupeDisplayStrings(vendor?.vendorProfile?.summary.strengths ?? vendor?.highlights ?? []);
 
   useEffect(() => {
     if (!betaToast) return;
@@ -65,7 +70,7 @@ export default function VenueDetailPage() {
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
 
-    async function loadVenue() {
+    async function loadVendor() {
       const {
         data: { session }
       } = await supabase.auth.getSession();
@@ -77,7 +82,7 @@ export default function VenueDetailPage() {
 
       setAccessToken(session.access_token);
 
-      const response = await fetch(`/api/vendors?category=venue&slug=${slug}`, {
+      const response = await fetch(`/api/vendors?slug=${slug}`, {
         headers: {
           Authorization: `Bearer ${session.access_token}`
         }
@@ -85,24 +90,24 @@ export default function VenueDetailPage() {
 
       if (response.ok) {
         const result = (await response.json()) as { candidates: VendorCandidateView[] };
-        const nextVenue = result.candidates?.[0] ?? null;
-        setVenue(nextVenue);
-        if (nextVenue && typeof window !== "undefined") {
-          setReaction(window.localStorage.getItem(`hada-reaction:${nextVenue.slug}`) as "liked" | "disliked" | null);
+        const nextVendor = result.candidates?.[0] ?? null;
+        setVendor(nextVendor);
+        if (nextVendor && typeof window !== "undefined") {
+          setReaction(window.localStorage.getItem(`hada-reaction:${nextVendor.slug}`) as "liked" | "disliked" | null);
         }
       }
 
       setIsLoading(false);
     }
 
-    void loadVenue();
+    void loadVendor();
   }, [router, slug]);
 
   useEffect(() => {
-    if (!accessToken || !venue) return;
+    if (!accessToken || !vendor) return;
 
     let isMounted = true;
-    const venueId = venue.id;
+    const vendorId = vendor.id;
 
     async function prepareContact() {
       const response = await fetch("/api/vendors/contact", {
@@ -111,13 +116,14 @@ export default function VenueDetailPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`
         },
-        body: JSON.stringify({ candidateId: venueId, preview: true })
+        body: JSON.stringify({ candidateId: vendorId, preview: true })
       });
 
       if (!response.ok || !isMounted) return;
 
       const result = (await response.json()) as PreparedContact;
-      if (isMounted) setPreparedContact(result);
+      if (!isMounted) return;
+      setPreparedContact(result);
     }
 
     void prepareContact();
@@ -125,7 +131,7 @@ export default function VenueDetailPage() {
     return () => {
       isMounted = false;
     };
-  }, [accessToken, venue]);
+  }, [accessToken, vendor]);
 
   function openMailClient(mailtoUrl: string) {
     if (hiddenMailtoRef.current) {
@@ -144,15 +150,17 @@ export default function VenueDetailPage() {
   }
 
   async function handleContact() {
-    if (!accessToken || !venue) return;
+    if (!accessToken || !vendor) return;
 
-    if (preparedContact?.emailDraft) {
-      setEmailFallback(preparedContact.emailDraft);
+    const instantContact = preparedContact;
+
+    if (instantContact?.emailDraft) {
+      setEmailFallback(instantContact.emailDraft);
     }
 
-    if (preparedContact?.mailtoUrl) {
+    if (instantContact?.mailtoUrl) {
       setContactMessage("Email préparé. Votre boîte mail va s'ouvrir.");
-      openMailClient(preparedContact.mailtoUrl);
+      openMailClient(instantContact.mailtoUrl);
     } else {
       setContactMessage("Préparation de l'email...");
     }
@@ -163,10 +171,10 @@ export default function VenueDetailPage() {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`
       },
-      body: JSON.stringify({ candidateId: venue.id })
+      body: JSON.stringify({ candidateId: vendor.id })
     });
 
-    const result = (await response.json()) as PreparedContact & { error?: string };
+    const result = await response.json();
     if (!response.ok) {
       setContactMessage(result.error ?? "Impossible de préparer l'email.");
       return;
@@ -175,7 +183,7 @@ export default function VenueDetailPage() {
     setPreparedContact(result);
     setEmailFallback(result.emailDraft ?? null);
 
-    if (!preparedContact?.mailtoUrl) {
+    if (!instantContact?.mailtoUrl) {
       setContactMessage("Email préparé. Votre boîte mail va s'ouvrir.");
       openMailClient(result.mailtoUrl);
     }
@@ -209,34 +217,37 @@ export default function VenueDetailPage() {
   }
 
   function updateReaction(nextReaction: "liked" | "disliked") {
-    if (!venue) return;
+    if (!vendor) return;
 
     const value = reaction === nextReaction ? null : nextReaction;
     setReaction(value);
     if (typeof window !== "undefined") {
       if (value) {
-        window.localStorage.setItem(`hada-reaction:${venue.slug}`, value);
+        window.localStorage.setItem(`hada-reaction:${vendor.slug}`, value);
       } else {
-        window.localStorage.removeItem(`hada-reaction:${venue.slug}`);
+        window.localStorage.removeItem(`hada-reaction:${vendor.slug}`);
       }
     }
   }
 
   if (isLoading) {
     return (
-      <AppShell active="vendors" mobileTitle="Lieu">
+      <AppShell active="vendors" mobileTitle="Prestataire">
         <div />
       </AppShell>
     );
   }
 
-  if (!venue) {
+  if (!vendor) {
     return (
-      <AppShell active="vendors" mobileTitle="Lieu">
+      <AppShell active="vendors" mobileTitle="Prestataire">
         <section className="rounded-[32px] bg-white p-6 shadow-[0_10px_30px_rgba(46,28,54,0.06)]">
           <p className="text-[20px] font-semibold text-[var(--hada-navy)]">Fiche prestataire introuvable</p>
-          <Link href="/venues" className="mt-5 inline-flex h-12 items-center justify-center rounded-full bg-[var(--hada-coral)] px-5 text-[15px] font-semibold text-white">
-            Retour aux lieux
+          <Link
+            href="/vendors"
+            className="mt-5 inline-flex h-12 items-center justify-center rounded-full bg-[var(--hada-coral)] px-5 text-[15px] font-semibold text-white"
+          >
+            Retour aux prestataires
           </Link>
         </section>
       </AppShell>
@@ -251,15 +262,23 @@ export default function VenueDetailPage() {
         </a>
 
         <div className="flex items-center justify-between gap-4 px-5 pb-4 pt-5 sm:px-8">
-          <Link href="/venues" className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#eadfda] bg-white text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]">
+          <Link
+            href={`/vendors?category=${vendor.category}`}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#eadfda] bg-white text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]"
+          >
             <ArrowLeftIcon className="h-6 w-6" />
           </Link>
-          <button type="button" onClick={() => setBetaToast(BETA_TOAST)} className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#eadfda] bg-white text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]" aria-label="Partager">
+          <button
+            type="button"
+            onClick={() => setBetaToast(BETA_TOAST)}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#eadfda] bg-white text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]"
+            aria-label="Partager"
+          >
             <ShareModernIcon className="h-5 w-5" />
           </button>
         </div>
 
-        <ImageCarousel vendor={venue} />
+        <ImageCarousel vendor={vendor} />
 
         <div className="p-5 sm:p-8">
           <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -268,8 +287,18 @@ export default function VenueDetailPage() {
               <p className="mt-1 text-[18px] text-[#7b7590]">{displayLocation}</p>
             </div>
             <div className="flex items-center gap-3">
-              <ReactionButton label="J'aime" active={reaction === "liked"} onClick={() => updateReaction("liked")} icon={<ThumbsUpIcon className="h-4 w-4" />} />
-              <ReactionButton label="Je passe" active={reaction === "disliked"} onClick={() => updateReaction("disliked")} icon={<ThumbsDownIcon className="h-4 w-4" />} />
+              <ReactionButton
+                label="J'aime"
+                active={reaction === "liked"}
+                onClick={() => updateReaction("liked")}
+                icon={<ThumbsUpIcon className="h-4 w-4" />}
+              />
+              <ReactionButton
+                label="Je passe"
+                active={reaction === "disliked"}
+                onClick={() => updateReaction("disliked")}
+                icon={<ThumbsDownIcon className="h-4 w-4" />}
+              />
             </div>
           </div>
 
@@ -279,7 +308,11 @@ export default function VenueDetailPage() {
             ))}
           </div>
 
-          <button type="button" onClick={handleContact} className="mt-6 flex h-14 w-full items-center justify-center rounded-full bg-[var(--hada-coral)] text-[18px] font-semibold text-white sm:h-16 sm:max-w-[280px]">
+          <button
+            type="button"
+            onClick={handleContact}
+            className="mt-6 flex h-14 w-full items-center justify-center rounded-full bg-[var(--hada-coral)] text-[18px] font-semibold text-white sm:h-16 sm:max-w-[280px]"
+          >
             Contacter
           </button>
           {contactMessage ? <p className="mt-3 text-[14px] font-medium text-[var(--hada-coral)]">{contactMessage}</p> : null}
@@ -291,7 +324,11 @@ export default function VenueDetailPage() {
                   <p className="text-[13px] font-semibold uppercase tracking-[0.12em] text-[#8f87a2]">Plan B</p>
                   <p className="mt-1 text-[15px] font-medium text-[var(--hada-navy)]">Copier le mail si votre boîte ne s'ouvre pas</p>
                 </div>
-                <button type="button" onClick={handleCopyEmail} className="inline-flex h-10 items-center justify-center rounded-full bg-white px-4 text-[14px] font-semibold text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]">
+                <button
+                  type="button"
+                  onClick={handleCopyEmail}
+                  className="inline-flex h-10 items-center justify-center rounded-full bg-white px-4 text-[14px] font-semibold text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]"
+                >
                   Copier
                 </button>
               </div>
@@ -325,21 +362,21 @@ export default function VenueDetailPage() {
                 </>
               ) : null}
 
-              <ContactList vendor={venue} websiteUrl={websiteUrl} />
+              <ContactList vendor={vendor} websiteUrl={websiteUrl} />
             </div>
 
             <div>
               {reviewSearchUrl ? (
                 <>
                   <SectionTitle title="Avis" />
-                  <ActionLinkCard
+                  <SimpleActionLink
                     href={reviewSearchUrl}
                     label="Voir les avis Google"
                     variant="navy"
                   />
                 </>
               ) : null}
-              <AddressBlock vendor={venue} />
+              <AddressBlock vendor={vendor} />
             </div>
           </div>
         </div>
@@ -349,41 +386,132 @@ export default function VenueDetailPage() {
   );
 }
 
-function buildInfoItems(venue: VendorCandidateView | null): InfoItem[] {
-  if (!venue) return [];
+function buildInfoItems(vendor: VendorCandidateView | null, categoryLabel: string): InfoItem[] {
+  if (!vendor) return [];
 
-  return [
-    { title: "Tarifs", value: venue.priceRange ?? "Sur demande" },
-    { title: "Capacité", value: venue.capacity ?? "À confirmer" },
-    { title: "Style", value: venue.vibe ?? venue.specialties ?? "À définir" },
-    { title: "Zone", value: venue.zoneIntervention ?? venue.city ?? venue.region ?? "À confirmer" }
-  ];
+  const baseZone = vendor.zoneIntervention ?? vendor.city ?? vendor.region ?? "À confirmer";
+  const baseAvailability = vendor.availability ?? vendor.contactLead ?? "À confirmer";
+
+  switch (vendor.category) {
+    case "dj":
+      return [
+        { title: "Ambiance", value: vendor.vibe ?? "À définir" },
+        { title: "Tarifs", value: vendor.priceRange ?? "Sur demande" },
+        { title: "Zone", value: baseZone },
+        { title: "Réactivité", value: baseAvailability }
+      ];
+    case "caterer":
+      return [
+        { title: "Tarifs", value: vendor.priceRange ?? "Sur demande" },
+        { title: "Capacité", value: vendor.capacity ?? "À confirmer" },
+        { title: "Spécialité", value: vendor.specialties ?? vendor.vibe ?? "À préciser" },
+        { title: "Zone", value: baseZone }
+      ];
+    case "photographer":
+    case "videographer":
+      return [
+        { title: "Style", value: vendor.vibe ?? "À définir" },
+        { title: "Tarifs", value: vendor.priceRange ?? "Sur demande" },
+        { title: "Zone", value: baseZone },
+        { title: "Disponibilité", value: baseAvailability }
+      ];
+    default:
+      return [
+        { title: "Tarifs", value: vendor.priceRange ?? "Sur demande" },
+        { title: "Type", value: categoryLabel },
+        { title: "Style", value: vendor.vibe ?? vendor.specialties ?? "À définir" },
+        { title: "Zone", value: baseZone }
+      ];
+  }
 }
 
-function buildVenueProfileInfoItems(venue: VendorCandidateView | null): CandidateInfoItem[] {
-  if (!venue) return [];
+function buildProfileInfoItems(vendor: VendorCandidateView | null, categoryLabel: string): CandidateInfoItem[] {
+  if (!vendor) return [];
 
-  const profile = venue.vendorProfile;
+  const profile = vendor.vendorProfile;
   const specific = profile?.category_specific ?? {};
-  const strengths = nonEmptyArray(profile?.summary.strengths) ?? venue.highlights ?? [];
-  const styleHints = pickTaggedValue(strengths, ["champ", "nature", "boh", "romant", "eleg", "élég", "raffin", "intim", "moderne", "vue", "jardin", "eau"]);
-  const venueTypeHints = pickTaggedValue(strengths, ["domaine", "chateau", "château", "salle", "orangerie", "ferme", "bastide", "villa", "mas", "grange"]);
+  const baseZone = profile?.identity.service_area ?? profile?.identity.location_label ?? vendor.zoneIntervention ?? vendor.city ?? vendor.region ?? "À confirmer";
+  const baseAvailability = profile?.logistics.availability ?? vendor.availability ?? vendor.contactLead ?? "À confirmer";
+  const basePrice = profile?.logistics.price_range ?? vendor.priceRange ?? "Sur demande";
+  const baseCapacity = profile?.logistics.capacity ?? vendor.capacity ?? "À confirmer";
+  const strengths = nonEmptyArray(profile?.summary.strengths) ?? vendor.highlights ?? [];
+  const styleHints = pickTaggedValue(strengths, ["champ", "pastel", "nature", "boh", "romant", "moderne", "eleg", "Ã©lÃ©g", "color", "raffin", "reportage", "cinemat", "cinÃ©mat"]);
+  const serviceHints = pickTaggedValue(strengths, ["bouquet", "composition", "arche", "centre", "table", "installation", "livraison", "sceno", "scÃ©no", "cocktail", "buffet", "menu", "formule", "reportage", "film"]);
 
-  return [
-    { title: "Tarifs", value: profile?.logistics.price_range ?? venue.priceRange ?? "Sur demande" },
-    {
-      title: "Capacité",
-      value: specificValueAny(specific, ["capacite", "capacity", "capacite_max", "capacite_invites", "capacite_assise"]) ?? profile?.logistics.capacity ?? venue.capacity
-    },
-    {
-      title: "Type de lieu",
-      value: specificValueAny(specific, ["type_lieu", "venue_type", "event_types", "espaces", "service_types"]) ?? venue.vibe ?? venueTypeHints
-    },
-    {
-      title: "Style",
-      value: specificValueAny(specific, ["style", "ambiance", "style_lieu", "atmosphere", "specialites"]) ?? venue.specialties ?? styleHints
-    }
-  ];
+  switch (vendor.category) {
+    case "dj":
+      return [
+        { title: "Tarifs", value: basePrice },
+        { title: "Style musical", value: specificValueAny(specific, ["style_musical", "genres_musicaux", "music_styles", "style"]) ?? vendor.vibe ?? styleHints },
+        { title: "Formats", value: specificValueAny(specific, ["formats", "formules", "service_types", "prestations", "event_types"]) ?? serviceHints },
+        { title: "Matériel", value: specificValueAny(specific, ["materiel", "materiel_sono", "equipment_provided"]) ?? baseAvailability }
+      ];
+    case "musician":
+      return [
+        { title: "Tarifs", value: basePrice },
+        { title: "Style musical", value: specificValueAny(specific, ["style_musical", "genres_musicaux", "music_styles", "style"]) ?? vendor.vibe ?? styleHints },
+        { title: "Formats", value: specificValueAny(specific, ["formats", "formules", "service_types", "prestations", "event_types", "references"]) ?? serviceHints },
+        { title: "Zone", value: baseZone }
+      ];
+    case "caterer":
+      return [
+        { title: "Tarifs", value: basePrice },
+        {
+          title: "Cuisine",
+          value:
+            specificValueAny(specific, ["type_cuisine", "cuisine", "style_culinaire", "specialites_culinaires", "dietary_options"]) ??
+            vendor.specialties ??
+            vendor.vibe ??
+            styleHints
+        },
+        { title: "Formats", value: specificValueAny(specific, ["formats", "formules", "service_types", "prestations", "service_inclus", "event_types"]) ?? serviceHints },
+        { title: "Capacité", value: specificValueAny(specific, ["capacite", "capacity", "capacite_couverts", "capacite_invites"]) ?? baseCapacity }
+      ];
+    case "photographer":
+      return [
+        { title: "Tarifs", value: basePrice },
+        { title: "Style", value: specificValueAny(specific, ["style_photo", "style", "approche", "styles"]) ?? vendor.vibe ?? styleHints },
+        { title: "Approche", value: specificValueAny(specific, ["approche", "specialites", "references_mariage"]) ?? serviceHints },
+        { title: "Livraison", value: specificValueAny(specific, ["livraison", "format_livraison", "delai_livraison"]) ?? baseAvailability }
+      ];
+    case "videographer":
+      return [
+        { title: "Tarifs", value: basePrice },
+        { title: "Style", value: specificValueAny(specific, ["style_video", "style", "approche", "styles"]) ?? vendor.vibe ?? styleHints },
+        { title: "Formats livrés", value: specificValueAny(specific, ["formats_livres", "format_livraison", "formats", "prestations"]) ?? serviceHints },
+        { title: "Délai", value: specificValueAny(specific, ["delai_livraison", "disponibilite"]) ?? baseAvailability }
+      ];
+    case "flowers":
+    case "decor":
+      return [
+        { title: "Tarifs", value: basePrice },
+        { title: "Style", value: specificValueAny(specific, ["style", "styles_floraux", "ambiance"]) ?? vendor.vibe ?? styleHints },
+        { title: "Prestations", value: specificValueAny(specific, ["prestations", "service_types", "specialites", "location_vases"]) ?? vendor.specialties ?? serviceHints },
+        { title: "Installation", value: specificValueAny(specific, ["installation", "livraison_mise_en_place", "livraison"]) ?? baseAvailability }
+      ];
+    case "dress":
+    case "suit":
+      return [
+        { title: "Tarifs", value: basePrice },
+        { title: "Style", value: specificValue(specific, "style") ?? vendor.vibe ?? styleHints },
+        { title: "Rendez-vous", value: specificValue(specific, "rendez_vous") ?? baseAvailability },
+        { title: "Délais", value: specificValue(specific, "delais") }
+      ];
+    case "transport":
+      return [
+        { title: "Tarifs", value: basePrice },
+        { title: "Transport", value: specificValueAny(specific, ["type_transport", "transport", "vehicle_type"]) ?? categoryLabel },
+        { title: "Capacité", value: specificValueAny(specific, ["capacite", "capacity"]) ?? baseCapacity },
+        { title: "Zone", value: specificValueAny(specific, ["zone", "zone_intervention", "service_area"]) ?? baseZone }
+      ];
+    default:
+      return [
+        { title: "Tarifs", value: basePrice },
+        { title: "Type", value: categoryLabel },
+        { title: "Style", value: vendor.vibe ?? vendor.specialties ?? styleHints },
+        { title: "Zone", value: baseZone }
+      ];
+  }
 }
 
 function getDisplayWebsite(vendor: VendorCandidateView | null) {
@@ -400,7 +528,8 @@ function getDisplayWebsite(vendor: VendorCandidateView | null) {
 
 function buildReviewSearchUrl(vendor: VendorCandidateView | null) {
   if (!vendor) return null;
-  const query = `${vendor.vendorProfile?.identity.name ?? vendor.name} lieu ${vendor.vendorProfile?.identity.location_label ?? vendor.city ?? vendor.region ?? ""} mariage avis Google Maps`;
+  const typeLabel = getVendorCategories().find((item) => item.key === vendor.category)?.label ?? vendor.category;
+  const query = `${vendor.vendorProfile?.identity.name ?? vendor.name} ${typeLabel} ${vendor.vendorProfile?.identity.location_label ?? vendor.city ?? vendor.region ?? ""} mariage avis Google Maps`;
   return `https://www.google.com/search?q=${encodeURIComponent(query.trim())}`;
 }
 
@@ -555,7 +684,7 @@ function AddressBlock({ vendor }: { vendor: VendorCandidateView }) {
   return (
     <>
       <SectionTitle title="Adresse" />
-      <ActionLinkCard href={href} label="Ouvrir sur Google Maps" variant="coral" />
+      <SimpleActionLink href={href} label="Ouvrir sur Google Maps" variant="coral" />
     </>
   );
 }
@@ -575,7 +704,7 @@ function CarouselButton({ direction, onClick }: { direction: "previous" | "next"
   );
 }
 
-function ActionLinkCard({ href, label, variant }: { href: string; label: string; variant: "coral" | "navy" }) {
+function SimpleActionLink({ href, label, variant }: { href: string; label: string; variant: "coral" | "navy" }) {
   const variantClasses =
     variant === "coral"
       ? "bg-[var(--hada-coral)] text-white shadow-[0_14px_30px_rgba(255,96,116,0.24)]"
@@ -610,6 +739,38 @@ function ExternalActionIcon({ className = "" }: { className?: string }) {
       <path d="M7 17 17 7" />
       <path d="M9 7h8v8" />
     </svg>
+  );
+}
+
+function ActionLinkCard({
+  href,
+  label,
+  helper,
+  variant
+}: {
+  href: string;
+  label: string;
+  helper: string;
+  variant: "coral" | "navy";
+}) {
+  const variantClasses =
+    variant === "coral"
+      ? "bg-[var(--hada-coral)] text-white shadow-[0_14px_30px_rgba(255,96,116,0.24)]"
+      : "bg-[var(--hada-navy)] text-white shadow-[0_14px_30px_rgba(43,33,79,0.22)]";
+
+  return (
+    <div className="mt-4 rounded-[26px] border border-[#efe5df] bg-[#fffdfb] p-4 shadow-[0_10px_26px_rgba(46,28,54,0.04)]">
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className={`flex min-h-14 w-full items-center justify-between gap-4 rounded-full px-5 text-[15px] font-semibold transition duration-200 hover:-translate-y-0.5 hover:shadow-[0_18px_34px_rgba(46,28,54,0.18)] ${variantClasses}`}
+      >
+        <span>{label}</span>
+        <span aria-hidden="true">→</span>
+      </a>
+      <p className="mt-3 px-2 text-[13px] font-medium text-[#8c8290]">{helper}</p>
+    </div>
   );
 }
 
@@ -721,7 +882,9 @@ function ReviewCard({ review }: { review: { author: string; rating?: number | nu
         </div>
         <div>
           <p className="text-[16px] font-semibold text-[var(--hada-navy)]">{review.author}</p>
-          <p className="text-[13px] text-[#8c8290]">{[review.rating ? `${review.rating.toFixed(1)}/5` : null, review.date, review.source].filter(Boolean).join(" • ") || "Avis client"}</p>
+          <p className="text-[13px] text-[#8c8290]">
+            {[review.rating ? `${review.rating.toFixed(1)}/5` : null, review.date, review.source].filter(Boolean).join(" • ") || "Avis client"}
+          </p>
         </div>
       </div>
       <p className="mt-4 text-[16px] leading-7 text-[#61596f]">{review.text}</p>
@@ -734,7 +897,17 @@ function pickReviewColor(initial: string) {
   return colors[initial.charCodeAt(0) % colors.length];
 }
 
-function ReactionButton({ label, active, onClick, icon }: { label: string; active: boolean; onClick: () => void; icon: ReactNode }) {
+function ReactionButton({
+  label,
+  active,
+  onClick,
+  icon
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+}) {
   return (
     <button
       type="button"
@@ -754,29 +927,11 @@ function BetaToast({ message }: { message: string }) {
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-10 z-50 flex justify-center px-4">
-      <div className="rounded-full bg-[var(--hada-navy)] px-5 py-3 text-center text-[13px] font-medium text-white shadow-[0_16px_34px_rgba(43,33,79,0.25)]">{message}</div>
+      <div className="rounded-full bg-[var(--hada-navy)] px-5 py-3 text-center text-[13px] font-medium text-white shadow-[0_16px_34px_rgba(43,33,79,0.25)]">
+        {message}
+      </div>
     </div>
   );
-}
-
-function isPreciseAddress(value: string | null | undefined) {
-  return Boolean(value && /\d/.test(value) && value.trim().split(/\s+/).length >= 3);
-}
-
-function capitalizeFirst(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return trimmed;
-  return trimmed.charAt(0).toLocaleUpperCase("fr-FR") + trimmed.slice(1);
-}
-
-function formatDisplayValue(value: string) {
-  const trimmed = value.trim().replace(/\s+/g, " ");
-  if (!trimmed) return trimmed;
-
-  const looksLikeAcronym = /^[A-Z0-9&+\-/ ]+$/.test(trimmed) && trimmed.length <= 5;
-  const mostlyUppercase = trimmed === trimmed.toLocaleUpperCase("fr-FR") && /[A-ZÀ-Ÿ]/.test(trimmed) && !looksLikeAcronym;
-  const normalized = mostlyUppercase ? trimmed.toLocaleLowerCase("fr-FR") : trimmed;
-  return capitalizeFirst(normalized);
 }
 
 function VendorImage({ src, alt, className, onUnavailable }: { src: string; alt: string; className: string; onUnavailable?: () => void }) {
@@ -816,4 +971,24 @@ function ImageFallback({ label, className }: { label: string; className: string 
       </div>
     </div>
   );
+}
+
+function isPreciseAddress(value: string | null | undefined) {
+  return Boolean(value && /\d/.test(value) && value.trim().split(/\s+/).length >= 3);
+}
+
+function capitalizeFirst(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  return trimmed.charAt(0).toLocaleUpperCase("fr-FR") + trimmed.slice(1);
+}
+
+function formatDisplayValue(value: string) {
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  if (!trimmed) return trimmed;
+
+  const looksLikeAcronym = /^[A-Z0-9&+\-/ ]+$/.test(trimmed) && trimmed.length <= 5;
+  const mostlyUppercase = trimmed === trimmed.toLocaleUpperCase("fr-FR") && /[A-ZÀ-Ÿ]/.test(trimmed) && !looksLikeAcronym;
+  const normalized = mostlyUppercase ? trimmed.toLocaleLowerCase("fr-FR") : trimmed;
+  return capitalizeFirst(normalized);
 }
