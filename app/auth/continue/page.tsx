@@ -13,6 +13,20 @@ export default function AuthContinuePage() {
     const supabase = createSupabaseBrowserClient();
 
     async function continueJourney() {
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get("code");
+
+      if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+
+        if (error) {
+          router.replace("/");
+          return;
+        }
+
+        window.history.replaceState(null, "", "/auth/continue");
+      }
+
       const {
         data: { session }
       } = await supabase.auth.getSession();

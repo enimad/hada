@@ -91,7 +91,7 @@ export default function SignupPage() {
           </button>
           <span className="text-[16px] font-medium leading-[1.4] tracking-[-0.03em] text-[#8a817d] sm:text-[18px]">
             En créant un compte, vous acceptez{" "}
-            <Link href="https://hada.framer.website/cgu" target="_blank" rel="noreferrer" className="underline">
+            <Link href="/cgu" target="_blank" rel="noreferrer" className="underline">
               nos conditions générales d&apos;utilisation.
             </Link>
           </span>

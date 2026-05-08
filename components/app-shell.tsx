@@ -49,23 +49,34 @@ export function AppShell({ children, active, mobileTitle = "Hada", mobileTitleNo
               </span>
             </Link>
 
-            <nav className="flex items-center gap-3 rounded-full border border-[#eadfda] bg-white/80 p-2 shadow-[0_8px_30px_rgba(46,28,54,0.06)]">
-              {navItems.map((item) => {
-                const isActive = item.key === active;
+            <div className="flex items-center gap-3">
+              <nav className="flex items-center gap-3 rounded-full border border-[#eadfda] bg-white/80 p-2 shadow-[0_8px_30px_rgba(46,28,54,0.06)]">
+                {navItems.map((item) => {
+                  const isActive = item.key === active;
 
-                return (
-                  <Link
-                    key={item.key}
-                    href={item.href}
-                    className={`rounded-full px-5 py-3 text-[15px] font-semibold tracking-[-0.02em] transition ${
-                      isActive ? "bg-[var(--hada-coral)] text-white" : "text-[var(--hada-navy)] hover:bg-[#fff0f1]"
-                    }`}
-                  >
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </nav>
+                  return (
+                    <Link
+                      key={item.key}
+                      href={item.href}
+                      className={`rounded-full px-5 py-3 text-[15px] font-semibold tracking-[-0.02em] transition ${
+                        isActive ? "bg-[var(--hada-coral)] text-white" : "text-[var(--hada-navy)] hover:bg-[#fff0f1]"
+                      }`}
+                    >
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </nav>
+
+              <Link
+                href="/logout"
+                aria-label="Se déconnecter"
+                title="Se déconnecter"
+                className="inline-flex h-[54px] w-[54px] items-center justify-center rounded-full border border-[#eadfda] bg-[#fff0f1] text-[var(--hada-coral)] shadow-[0_8px_26px_rgba(251,105,116,0.12)] transition hover:-translate-y-0.5 hover:bg-[var(--hada-coral)] hover:text-white"
+              >
+                <LogoutIcon className="h-5 w-5" />
+              </Link>
+            </div>
           </div>
         </header>
 
@@ -74,5 +85,15 @@ export function AppShell({ children, active, mobileTitle = "Hada", mobileTitleNo
 
       <HadaDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} active={active} />
     </>
+  );
+}
+
+function LogoutIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="m16 17 5-5-5-5" />
+      <path d="M21 12H9" />
+    </svg>
   );
 }

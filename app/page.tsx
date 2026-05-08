@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
   ArrowUpIcon,
@@ -17,6 +18,29 @@ export default function HomePage() {
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    const supabase = createSupabaseBrowserClient();
+
+    async function clearPublicEntrySession() {
+      try {
+        await supabase.auth.signOut({ scope: "local" });
+      } catch {}
+
+      try {
+        await fetch("/api/auth/logout", {
+          method: "POST",
+          credentials: "include"
+        });
+      } catch {}
+
+      const keysToRemove = Object.keys(window.localStorage).filter((key) => key.startsWith("sb-") || key.includes("supabase") || key.startsWith("hada:"));
+      keysToRemove.forEach((key) => window.localStorage.removeItem(key));
+      window.sessionStorage.clear();
+    }
+
+    void clearPublicEntrySession();
+  }, []);
 
   function submitEmail() {
     startTransition(async () => {
@@ -64,7 +88,7 @@ export default function HomePage() {
               const { error } = await supabase.auth.signInWithOAuth({
                 provider: "google",
                 options: {
-                  redirectTo: `${window.location.origin}/auth/continue`
+                  redirectTo: `${window.location.origin}/auth/callback?next=/auth/continue`
                 }
               });
 
@@ -111,6 +135,15 @@ export default function HomePage() {
         />
         {message ? <p className="mt-4 text-center text-[14px] text-[#8d8387] sm:text-[15px]">{message}</p> : null}
       </form>
+
+      <div className="mt-8 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-center text-[13px] font-medium text-[#8d8387]">
+        <Link href="/privacy" className="underline underline-offset-4">
+          Politique de confidentialité
+        </Link>
+        <Link href="/cgu" className="underline underline-offset-4">
+          Conditions d&apos;utilisation
+        </Link>
+      </div>
     </MobileScreen>
   );
 }
