@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { HadaDrawer } from "@/components/hada-drawer";
 import { HadaWordmark, MenuIcon } from "@/components/mobile-screen";
+import { SurveyModalHost } from "@/components/survey-exit-guard";
 
 type AppShellProps = {
   children: ReactNode;
@@ -19,6 +20,8 @@ const navItems = [
   { key: "wedding", label: "Mon mariage", href: "/monmariage" },
   { key: "vendors", label: "Mes prestataires", href: "/vendors" }
 ] as const;
+
+const feedbackFormUrl = "https://docs.google.com/forms/d/e/1FAIpQLSdSLTUfwxa179tPHL00z3bUYZxRc9VNPPFqelqQLLComRF0Bw/viewform";
 
 export function AppShell({ children, active, mobileTitle = "Hada", mobileTitleNode, mobileRightSlot }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -68,6 +71,15 @@ export function AppShell({ children, active, mobileTitle = "Hada", mobileTitleNo
                 })}
               </nav>
 
+              <a
+                href={feedbackFormUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-[54px] items-center justify-center rounded-full bg-[#fff0f1] px-5 text-[14px] font-semibold tracking-[-0.02em] text-[var(--hada-coral)] shadow-[0_8px_26px_rgba(251,105,116,0.12)] transition hover:-translate-y-0.5 hover:bg-[var(--hada-coral)] hover:text-white lg:px-6"
+              >
+                Donner mon avis sur Hada
+              </a>
+
               <Link
                 href="/logout"
                 aria-label="Se déconnecter"
@@ -84,6 +96,7 @@ export function AppShell({ children, active, mobileTitle = "Hada", mobileTitleNo
       </main>
 
       <HadaDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} active={active} />
+      <SurveyModalHost />
     </>
   );
 }

@@ -30,7 +30,10 @@ export const env = {
   firecrawlApiKey: firecrawlApiKeys[0] ?? "",
   firecrawlApiKeys,
   mistralApiKey: process.env.MISTRAL_API_KEY ?? "",
-  mistralModel: process.env.MISTRAL_MODEL ?? "mistral-medium-latest"
+  mistralModel: process.env.MISTRAL_MODEL ?? "mistral-medium-latest",
+  resendApiKey: process.env.RESEND_API_KEY ?? "",
+  surveyNotifyTo: process.env.SURVEY_NOTIFY_TO ?? "",
+  surveyNotifyFrom: process.env.SURVEY_NOTIFY_FROM ?? ""
 };
 
 export function validateServerEnv() {

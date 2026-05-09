@@ -139,6 +139,13 @@ export default function OnboardingPage() {
     setCitySuggestions([]);
   }
 
+  function removePlaceIdea(placeIdea: string) {
+    setForm((current) => ({
+      ...current,
+      placeIdeas: current.placeIdeas.filter((idea) => idea !== placeIdea)
+    }));
+  }
+
   const content = useMemo(() => {
     if (step === -1) {
       return (
@@ -314,8 +321,19 @@ export default function OnboardingPage() {
           {form.placeIdeas.length > 0 ? (
             <div className="mt-5 flex flex-wrap gap-3">
               {form.placeIdeas.map((idea) => (
-                <span key={idea} className="rounded-full bg-[#fff0f1] px-4 py-2 text-[14px] font-medium text-[var(--hada-coral)]">
-                  {idea}
+                <span
+                  key={idea}
+                  className="inline-flex items-center gap-2 rounded-full bg-[#fff0f1] py-2 pl-4 pr-2 text-[14px] font-medium text-[var(--hada-coral)]"
+                >
+                  <span>{idea}</span>
+                  <button
+                    type="button"
+                    onClick={() => removePlaceIdea(idea)}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/80 text-[16px] leading-none text-[var(--hada-coral)] shadow-[0_6px_14px_rgba(255,96,116,0.12)] transition hover:bg-white"
+                    aria-label={`Supprimer ${idea}`}
+                  >
+                    ×
+                  </button>
                 </span>
               ))}
             </div>

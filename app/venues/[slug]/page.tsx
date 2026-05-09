@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { ArrowLeftIcon, ThumbsDownIcon, ThumbsUpIcon } from "@/components/mobile-screen";
+import { SurveyExitGuard } from "@/components/survey-exit-guard";
 import { collectDisplayImageUrls } from "@/lib/image-url";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { VendorCandidateView } from "@/lib/types";
@@ -245,6 +246,7 @@ export default function VenueDetailPage() {
 
   return (
     <AppShell active="vendors" mobileTitle={displayName}>
+      <SurveyExitGuard sourceVendorSlug={venue.slug} />
       <article className="overflow-hidden rounded-[32px] bg-white shadow-[0_10px_30px_rgba(46,28,54,0.06)]">
         <a ref={hiddenMailtoRef} href={preparedContact?.mailtoUrl ?? "#"} className="hidden" aria-hidden="true">
           Mailto

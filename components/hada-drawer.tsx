@@ -19,6 +19,8 @@ const items = [
   { key: "vendors", label: "Mes prestataires", href: "/vendors", icon: "heart" }
 ] as const;
 
+const feedbackFormUrl = "https://docs.google.com/forms/d/e/1FAIpQLSdSLTUfwxa179tPHL00z3bUYZxRc9VNPPFqelqQLLComRF0Bw/viewform";
+
 export function HadaDrawer({ open, onClose, active = "chat" }: HadaDrawerProps) {
   const router = useRouter();
   const [profile, setProfile] = useState<WeddingProfile | null>(null);
@@ -124,6 +126,17 @@ export function HadaDrawer({ open, onClose, active = "chat" }: HadaDrawerProps) 
             );
           })}
         </nav>
+
+        <a
+          href={feedbackFormUrl}
+          target="_blank"
+          rel="noreferrer"
+          onClick={onClose}
+          className="mt-6 inline-flex items-center justify-center gap-2 rounded-full bg-[#fff0f1] px-5 py-4 text-center text-[15px] font-semibold tracking-[-0.02em] text-[var(--hada-coral)] shadow-[0_12px_28px_rgba(251,105,116,0.12)]"
+        >
+          Donner mon avis sur Hada
+          <span aria-hidden="true">↗</span>
+        </a>
 
         <div className="mt-auto flex items-center justify-between border-t border-[#e9dfda] pt-5">
           <div className="flex items-center gap-3">

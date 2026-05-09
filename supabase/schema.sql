@@ -92,6 +92,21 @@ create table if not exists public.outreach_messages (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.survey_responses (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  source_path text,
+  source_vendor_slug text,
+  rating integer check (rating between 0 and 10),
+  appreciated text,
+  frustrated text,
+  reuse_intent text,
+  dream_feature text,
+  context_json jsonb not null default '{}'::jsonb,
+  email_sent boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -129,6 +144,7 @@ alter table public.vendor_requests enable row level security;
 alter table public.vendor_candidates enable row level security;
 alter table public.outreach_threads enable row level security;
 alter table public.outreach_messages enable row level security;
+alter table public.survey_responses enable row level security;
 
 -- MVP note:
 -- pour aller vite, les routes serveur utilisent la service role key.
