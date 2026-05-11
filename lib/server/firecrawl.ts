@@ -109,6 +109,7 @@ export async function searchVendorsWithFirecrawl(
     userId: string;
     category: VendorCategory;
     query: string;
+    location?: string | null;
     profile: Partial<WeddingProfile> | null;
     mode?: "strict" | "expanded";
   }
@@ -124,7 +125,7 @@ export async function searchVendorsWithFirecrawl(
     // Clés API Firecrawl à renseigner dans .env.local via FIRECRAWL_API_KEY ou FIRECRAWL_API_KEYS.
     const existingDomains = await loadExistingDomains(supabase, input.userId);
     const mode = input.mode ?? "strict";
-    const searchQuery = buildFirecrawlQuery(input.category, input.query, input.profile, mode);
+    const searchQuery = buildFirecrawlQuery(input.category, input.query, input.profile, mode, input.location);
 
     const searchResults = await withFirecrawlKeyRotation(apiKeys, disabledKeyIndexes, "search", (firecrawl) =>
       firecrawl.search(searchQuery, {
@@ -310,21 +311,32 @@ function unwrapFirecrawlDocument(raw: unknown): Record<string, unknown> {
   return document;
 }
 
-function buildFirecrawlQuery(category: VendorCategory, query: string, profile: Partial<WeddingProfile> | null, mode: "strict" | "expanded") {
-  const location = getPrimarySearchLocation(profile);
+function buildFirecrawlQuery(
+  category: VendorCategory,
+  query: string,
+  profile: Partial<WeddingProfile> | null,
+  mode: "strict" | "expanded",
+  explicitLocation?: string | null
+) {
+  const location = cleanLocation(explicitLocation) ?? getPrimarySearchLocation(profile);
   const baseQuery = buildCategorySearchCore(category, location);
   const modifiers = cleanSearchModifiers(query, category, location);
   const directoryHint = mode === "expanded" ? "mariages.net zankyou bridebook" : "";
   return compactFirecrawlQuery(`${baseQuery} ${modifiers} ${directoryHint}`, mode === "expanded" ? 12 : 10).slice(0, 160);
 }
 
-function getPrimarySearchLocation(profile: Partial<WeddingProfile> | null) {
-  const raw = profile?.city ?? profile?.region ?? profile?.country ?? "France";
-  const withoutContext = raw
+function cleanLocation(value: string | null | undefined) {
+  if (!value) return null;
+  const cleaned = value
     .split(",")[0]
     .replace(/\([^)]*\)/g, "")
     .trim();
-  return withoutContext || raw;
+  return cleaned || null;
+}
+
+function getPrimarySearchLocation(profile: Partial<WeddingProfile> | null) {
+  const raw = profile?.city ?? profile?.region ?? profile?.country ?? "France";
+  return cleanLocation(raw) ?? raw;
 }
 
 function buildCategorySearchCore(category: VendorCategory, location: string) {

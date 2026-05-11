@@ -26,11 +26,14 @@ type MistralMessage = {
 
 type HadaState = {
   status: "clarify" | "ready";
+  intent: "advice" | "search_collect" | "search_ready" | "profile_update" | "profile_update_confirm" | "contact_email" | "smalltalk";
   category: VendorCategory | null;
+  location: string | null;
   style: string | null;
   constraints: string | null;
   budget: string | null;
   searchQuery: string | null;
+  profileUpdate: ProfileUpdatePatch | null;
 };
 
 type PendingSearchIntake = HadaState & {
@@ -38,6 +41,21 @@ type PendingSearchIntake = HadaState & {
   metadata: Record<string, unknown>;
   initialMessage: string | null;
   exchanges: number;
+};
+
+type ProfileUpdatePatch = {
+  wedding_date: string | null;
+  city: string | null;
+  region: string | null;
+  guest_count: number | null;
+  budget_min: number | null;
+  budget_max: number | null;
+};
+
+type PendingProfileUpdate = {
+  messageId: string;
+  metadata: Record<string, unknown>;
+  patch: ProfileUpdatePatch;
 };
 
 export async function GET(request: NextRequest) {
@@ -129,13 +147,27 @@ export async function POST(request: NextRequest) {
       messages: history
     });
     const pendingIntake = await getPendingSearchIntake(supabase, conversation.id);
-    const forceSearch = Boolean(pendingIntake && pendingIntake.exchanges >= 1);
+    const pendingProfileUpdate = await getPendingProfileUpdate(supabase, conversation.id);
+
+    const pendingProfileResolution = await resolvePendingProfileUpdate({
+      supabase,
+      pendingProfileUpdate,
+      conversationId: conversation.id,
+      userId: user.id,
+      userText: content
+    });
+    if (pendingProfileResolution && "response" in pendingProfileResolution) {
+      return pendingProfileResolution.response;
+    }
+    const activePendingProfileUpdate = pendingProfileResolution && "clearForCurrentTurn" in pendingProfileResolution ? null : pendingProfileUpdate;
+
+    const forceSearch = Boolean(pendingIntake && pendingIntake.exchanges >= 1 && !looksLikeAdviceRequest(content));
     const mistralText = await runMistralChat({
       systemPrompt: buildPlannerSystemPrompt(profile, historyForModel, plannerContext),
       historyForModel,
       maxTokens: 1024,
       temperature: 0.35,
-      extraUserInstruction: buildCollectionInstruction({ profile, pendingIntake, userText: content, forceSearch })
+      extraUserInstruction: buildCollectionInstruction({ profile, pendingIntake, pendingProfileUpdate: activePendingProfileUpdate, userText: content, forceSearch })
     });
 
     if (!mistralText) {
@@ -153,20 +185,87 @@ export async function POST(request: NextRequest) {
     }
 
     const parsed = parseHadaState(mistralText);
-    const category =
-      parsed.state.category ??
-      pendingIntake?.category ??
-      normalizeSearchCategory(pendingIntake?.initialMessage) ??
-      normalizeSearchCategory(content) ??
-      inferCategoryFromHistory(history);
-    const shouldSearch = Boolean(category && (pendingIntake || parsed.state.status === "ready" || forceSearch || looksLikeSearchLaunch(parsed.displayText)));
+    const category = parsed.state.intent === "search_ready"
+      ? parsed.state.category ??
+        pendingIntake?.category ??
+        normalizeSearchCategory(pendingIntake?.initialMessage) ??
+        normalizeSearchCategory(content) ??
+        inferCategoryFromHistory(history)
+      : parsed.state.category;
+    const shouldSearch = Boolean(category && parsed.state.intent === "search_ready" && parsed.state.status === "ready");
 
-    if (!shouldSearch) {
+    const profilePatchFromSearch = shouldSearch ? inferProfilePatchFromSearchRequest(content, profile, { ...parsed.state, category }) : null;
+    if (profilePatchFromSearch) {
       const assistantMessage = await insertConversationMessage(supabase, {
         conversationId: conversation.id,
         role: "assistant",
-        content: parsed.displayText,
-        metadata: buildPendingSearchMetadata({ ...parsed.state, category: category ?? null }, content, pendingIntake)
+        content: buildProfileUpdateConfirmationMessage(profilePatchFromSearch),
+        metadata: buildPendingProfileUpdateMetadata(profilePatchFromSearch)
+      });
+
+      return NextResponse.json({
+        conversationId: conversation.id,
+        assistantMessage,
+        message: assistantMessage.content,
+        action: null,
+        categorie: category,
+        redirect_path: null,
+        searchResultsCount: 0
+      });
+    }
+
+    if (!shouldSearch) {
+      if (parsed.state.intent === "profile_update") {
+        const appliedPatch = await applyProfileUpdatePatch(supabase, user.id, parsed.state.profileUpdate ?? pendingProfileUpdate?.patch ?? null);
+        if (pendingProfileUpdate) {
+          await clearAllPendingProfileUpdates(supabase, conversation.id, "completed");
+        }
+
+        const assistantMessage = await insertConversationMessage(supabase, {
+          conversationId: conversation.id,
+          role: "assistant",
+          content: parsed.displayText || buildProfileUpdateAppliedMessage(appliedPatch ?? parsed.state.profileUpdate ?? pendingProfileUpdate?.patch ?? null),
+          metadata: {
+            profileUpdate: {
+              status: appliedPatch ? "completed" : "empty",
+              patch: appliedPatch
+            }
+          }
+        });
+
+        return NextResponse.json({
+          conversationId: conversation.id,
+          assistantMessage,
+          message: assistantMessage.content,
+          action: null,
+          categorie: null,
+          redirect_path: null,
+          searchResultsCount: 0,
+          profileUpdated: Boolean(appliedPatch),
+          profileUpdate: appliedPatch
+        });
+      }
+
+      const metadata = parsed.state.intent === "search_collect"
+        ? buildPendingSearchMetadata({ ...parsed.state, category: category ?? null }, content, pendingIntake)
+        : parsed.state.intent === "profile_update_confirm"
+          ? buildPendingProfileUpdateMetadata(parsed.state.profileUpdate)
+          : {};
+
+      if (pendingProfileUpdate && parsed.state.intent !== "profile_update_confirm") {
+        await clearAllPendingProfileUpdates(supabase, conversation.id, "declined");
+      }
+
+      const assistantContent =
+        parsed.state.intent === "profile_update_confirm"
+          ? parsed.displayText || buildProfileUpdateConfirmationMessage(parsed.state.profileUpdate)
+          : parsed.displayText || buildEmptyAssistantFallback(parsed.state.intent);
+
+      const assistantMessage = await insertConversationMessage(supabase, {
+        conversationId: conversation.id,
+        role: "assistant",
+        content: assistantContent,
+        metadata
       });
 
       return NextResponse.json({
@@ -184,12 +283,18 @@ export async function POST(request: NextRequest) {
       await clearPendingSearchIntake(supabase, pendingIntake);
     }
 
+    const searchPayload = buildSearchPayloadFromState({ ...parsed.state, category }, content, profile, pendingIntake);
+    const hasExistingCategoryResults = await hasExistingCandidatesForCategory(supabase, user.id, searchPayload.category);
+
     return performSearchWorkflow({
       supabase,
       userId: user.id,
       conversationId: conversation.id,
       profile,
-      search: buildSearchPayloadFromState({ ...parsed.state, category }, content, profile, pendingIntake)
+      search: searchPayload,
+      options: {
+        skipCache: hasExistingCategoryResults || shouldBypassSearchCache(content, { ...parsed.state, category }, profile)
+      }
     });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unknown error" }, { status: 500 });
@@ -316,17 +421,321 @@ async function getPendingSearchIntake(supabase: ReturnType<typeof createSupabase
       messageId: message.id,
       metadata,
       status: "clarify",
+      intent: "search_collect",
       category: normalizeSearchCategory(readString(value.category)),
+      location: readString(value.location),
       style: readString(value.style),
       constraints: readString(value.constraints),
       budget: readString(value.budget),
       searchQuery: readString(value.searchQuery),
+      profileUpdate: null,
       initialMessage: readString(value.initialMessage),
       exchanges: typeof value.exchanges === "number" ? value.exchanges : 1
     };
   }
 
   return null;
+}
+
+async function getPendingProfileUpdate(supabase: ReturnType<typeof createSupabaseServerClient>, conversationId: string): Promise<PendingProfileUpdate | null> {
+  const { data } = await supabase
+    .from("messages")
+    .select("id, metadata_json")
+    .eq("conversation_id", conversationId)
+    .eq("role", "assistant")
+    .order("created_at", { ascending: false })
+    .limit(12);
+
+  for (const message of data ?? []) {
+    const metadata = (message.metadata_json ?? {}) as Record<string, unknown>;
+    const pending = metadata.pendingProfileUpdate;
+    if (!pending || typeof pending !== "object") continue;
+
+    const value = pending as Record<string, unknown>;
+    if (value.status !== "confirm") return null;
+
+    const patch = sanitizeProfileUpdatePatch(value.patch);
+    if (!patch) return null;
+
+    return {
+      messageId: message.id,
+      metadata,
+      patch
+    };
+  }
+
+  return null;
+}
+
+async function hasExistingCandidatesForCategory(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  userId: string,
+  category: VendorCategory
+) {
+  const { data: requests } = await supabase
+    .from("vendor_requests")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("vendor_category", category)
+    .limit(50);
+
+  const requestIds = (requests ?? []).map((request) => request.id);
+  if (requestIds.length === 0) return false;
+
+  const { data: candidates } = await supabase
+    .from("vendor_candidates")
+    .select("id")
+    .in("vendor_request_id", requestIds)
+    .eq("category", category)
+    .limit(1);
+
+  return Boolean(candidates?.length);
+}
+
+function buildPendingProfileUpdateMetadata(rawPatch: ProfileUpdatePatch | null) {
+  const patch = sanitizeProfileUpdatePatch(rawPatch);
+  if (!patch) return {};
+
+  return {
+    pendingProfileUpdate: {
+      status: "confirm",
+      patch
+    }
+  };
+}
+
+async function clearPendingProfileUpdate(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  pending: PendingProfileUpdate,
+  status: "completed" | "declined"
+) {
+  await supabase
+    .from("messages")
+    .update({
+      metadata_json: {
+        ...pending.metadata,
+        pendingProfileUpdate: {
+          ...((pending.metadata.pendingProfileUpdate as Record<string, unknown> | undefined) ?? {}),
+          status
+        }
+      }
+    })
+    .eq("id", pending.messageId);
+}
+
+async function clearAllPendingProfileUpdates(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  conversationId: string,
+  status: "completed" | "declined"
+) {
+  const { data } = await supabase
+    .from("messages")
+    .select("id, metadata_json")
+    .eq("conversation_id", conversationId)
+    .eq("role", "assistant")
+    .order("created_at", { ascending: false })
+    .limit(24);
+
+  await Promise.all(
+    (data ?? [])
+      .map((message) => {
+        const metadata = (message.metadata_json ?? {}) as Record<string, unknown>;
+        const pending = metadata.pendingProfileUpdate;
+        if (!pending || typeof pending !== "object") return null;
+
+        const pendingValue = pending as Record<string, unknown>;
+        if (pendingValue.status !== "confirm") return null;
+
+        return supabase
+          .from("messages")
+          .update({
+            metadata_json: {
+              ...metadata,
+              pendingProfileUpdate: {
+                ...pendingValue,
+                status
+              }
+            }
+          })
+          .eq("id", message.id);
+      })
+      .filter(Boolean)
+  );
+}
+
+async function applyProfileUpdatePatch(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  userId: string,
+  rawPatch: ProfileUpdatePatch | null
+) {
+  const patch = sanitizeProfileUpdatePatch(rawPatch);
+  if (!patch) return null;
+
+  const update = Object.fromEntries(
+    Object.entries(patch).filter(([, value]) => value !== null && value !== undefined)
+  ) as Partial<Pick<WeddingProfile, "wedding_date" | "city" | "region" | "guest_count" | "budget_min" | "budget_max">>;
+
+  if (Object.keys(update).length === 0) return null;
+
+  const { data: current } = await supabase.from("wedding_profiles").select("*").eq("user_id", userId).maybeSingle();
+  const merged = {
+    ...(current ?? {}),
+    ...update,
+    user_id: userId,
+    country: current?.country ?? "France"
+  };
+
+  const payload = {
+    ...update,
+    user_id: userId,
+    country: merged.country,
+    profile_completion_score: computeProfileCompletionScore(merged)
+  };
+
+  const { error } = current
+    ? await supabase.from("wedding_profiles").update(payload).eq("user_id", userId)
+    : await supabase.from("wedding_profiles").upsert(payload, { onConflict: "user_id" });
+
+  if (error) throw new Error(error.message);
+
+  return sanitizeProfileUpdatePatch({
+    wedding_date: null,
+    city: null,
+    region: null,
+    guest_count: null,
+    budget_min: null,
+    budget_max: null,
+    ...update
+  });
+}
+
+async function resolvePendingProfileUpdate(input: {
+  supabase: ReturnType<typeof createSupabaseServerClient>;
+  pendingProfileUpdate: PendingProfileUpdate | null;
+  conversationId: string;
+  userId: string;
+  userText: string;
+}): Promise<{ response: NextResponse } | { clearForCurrentTurn: true } | null> {
+  if (!input.pendingProfileUpdate) return null;
+
+  if (looksLikeAffirmative(input.userText)) {
+    const appliedPatch = await applyProfileUpdatePatch(input.supabase, input.userId, input.pendingProfileUpdate.patch);
+    await clearAllPendingProfileUpdates(input.supabase, input.conversationId, "completed");
+
+    const assistantMessage = await insertConversationMessage(input.supabase, {
+      conversationId: input.conversationId,
+      role: "assistant",
+      content: buildProfileUpdateAppliedMessage(appliedPatch ?? input.pendingProfileUpdate.patch),
+      metadata: {
+        profileUpdate: {
+          status: appliedPatch ? "completed" : "empty",
+          patch: appliedPatch ?? input.pendingProfileUpdate.patch
+        }
+      }
+    });
+
+    return {
+      response: NextResponse.json({
+        conversationId: input.conversationId,
+        assistantMessage,
+        message: assistantMessage.content,
+        action: null,
+        categorie: null,
+        redirect_path: null,
+        searchResultsCount: 0,
+        profileUpdated: Boolean(appliedPatch),
+        profileUpdate: appliedPatch
+      })
+    };
+  }
+
+  if (looksLikeNegative(input.userText)) {
+    await clearAllPendingProfileUpdates(input.supabase, input.conversationId, "declined");
+
+    if (hasFollowUpAfterProfileDecision(input.userText)) {
+      return { clearForCurrentTurn: true };
+    }
+
+    const assistantMessage = await insertConversationMessage(input.supabase, {
+      conversationId: input.conversationId,
+      role: "assistant",
+      content: "C'est noté, je garde votre profil tel quel. Dites-moi ce que vous souhaitez faire ensuite et je m'adapte."
+    });
+
+    return {
+      response: NextResponse.json({
+        conversationId: input.conversationId,
+        assistantMessage,
+        message: assistantMessage.content,
+        action: null,
+        categorie: null,
+        redirect_path: null,
+        searchResultsCount: 0
+      })
+    };
+  }
+
+  await clearAllPendingProfileUpdates(input.supabase, input.conversationId, "declined");
+  return { clearForCurrentTurn: true };
+}
+
+function buildProfileUpdateConfirmationMessage(patch: ProfileUpdatePatch | null) {
+  const details = formatProfileUpdatePatch(patch);
+  return details
+    ? `Je vois une différence avec votre profil : ${details}. Souhaitez-vous que je mette votre profil à jour avant de continuer ?`
+    : "Je vois une information différente de votre profil. Souhaitez-vous que je mette votre profil à jour avant de continuer ?";
+}
+
+function buildProfileUpdateAppliedMessage(patch: ProfileUpdatePatch | null) {
+  const details = formatProfileUpdatePatch(patch);
+  return details
+    ? `C'est bien pris en compte, votre profil est à jour : ${details}.`
+    : "C'est bien pris en compte, votre profil est à jour.";
+}
+
+function buildEmptyAssistantFallback(intent: HadaState["intent"]) {
+  if (intent === "profile_update_confirm") {
+    return "Je vois une information différente de votre profil. Souhaitez-vous que je mette votre profil à jour avant de continuer ?";
+  }
+
+  if (intent === "profile_update") {
+    return "C'est bien pris en compte, votre profil est à jour.";
+  }
+
+  if (intent === "search_collect") {
+    return "Je vous suis. Donnez-moi juste l'envie principale pour cette recherche, et je m'en occupe.";
+  }
+
+  return "Je suis là, dites-moi ce que vous souhaitez faire et je m'adapte.";
+}
+
+function formatProfileUpdatePatch(patch: ProfileUpdatePatch | null) {
+  const cleanPatch = sanitizeProfileUpdatePatch(patch);
+  if (!cleanPatch) return null;
+
+  const parts = [
+    cleanPatch.wedding_date ? `date du mariage ${cleanPatch.wedding_date}` : null,
+    cleanPatch.city ? `lieu visé ${cleanPatch.city}${cleanPatch.region ? ` (${cleanPatch.region})` : ""}` : cleanPatch.region ? `région ${cleanPatch.region}` : null,
+    cleanPatch.guest_count ? `${cleanPatch.guest_count} invités` : null,
+    cleanPatch.budget_max ? `budget ${cleanPatch.budget_max.toLocaleString("fr-FR")} €` : cleanPatch.budget_min ? `budget minimum ${cleanPatch.budget_min.toLocaleString("fr-FR")} €` : null
+  ].filter(Boolean);
+
+  return parts.join(", ") || null;
+}
+
+function looksLikeAffirmative(value: string) {
+  const normalized = normalizeText(value);
+  return /^(oui|yes|ok|okay|vas y|go|confirme|exact|c est ca|c'est ca|tout a fait|bien sur|d accord|daccord|valide)\b/.test(normalized);
+}
+
+function looksLikeNegative(value: string) {
+  const normalized = normalizeText(value);
+  return /^(non|no|pas maintenant|laisse|annule|garde|ne change pas|pas besoin)\b/.test(normalized);
+}
+
+function hasFollowUpAfterProfileDecision(value: string) {
+  const normalized = normalizeText(value);
+  return /\b(et|puis|sinon|maintenant|aussi|dis|explique|cherche|trouve|conseille|pourquoi|quoi|comment)\b/.test(normalized) || normalized.includes("?");
 }
 
 function buildSearchQuotaFollowUpMessage(quota: Awaited<ReturnType<typeof getSearchQuotaStatus>>) {
@@ -370,6 +779,7 @@ function formatQuotaReset(resetAt: string | null) {
 function buildCollectionInstruction(input: {
   profile: Partial<WeddingProfile> | null;
   pendingIntake: PendingSearchIntake | null;
+  pendingProfileUpdate: PendingProfileUpdate | null;
   userText: string;
   forceSearch: boolean;
 }) {
@@ -377,11 +787,12 @@ function buildCollectionInstruction(input: {
     "Contexte serveur pour Hada.",
     `Profil couple JSON : ${JSON.stringify(buildProfileBrief(input.profile))}`,
     `Collecte en cours JSON : ${JSON.stringify(input.pendingIntake ? toPendingBrief(input.pendingIntake) : null)}`,
+    `Mise a jour profil en attente JSON : ${JSON.stringify(input.pendingProfileUpdate?.patch ?? null)}`,
     `forceSearch: ${input.forceSearch}`,
     `Dernier message couple : ${input.userText}`,
     input.forceSearch
-      ? "Tu dois répondre avec status ready dans HADA_STATE, annoncer naturellement que tu lances la recherche, et ne poser aucune question."
-      : "Si le type de prestataire est clair et qu'il n'y a pas de collecte en cours, pose une seule question humaine sur l'envie principale. Si une collecte est déjà en cours, réponds avec status ready.",
+      ? "Tu dois répondre avec intent search_ready et status ready dans HADA_STATE, annoncer naturellement que tu lances la recherche, et ne poser aucune question."
+      : "Décide d'abord l'intention réelle du couple. S'il demande de modifier le profil mariage, réponds avec intent profile_update et renseigne profile_update. Si une mise à jour profil est en attente et que le couple confirme, réponds avec intent profile_update et reprends les champs en attente. Si une info contredit le profil sans demande claire de mise à jour, réponds avec intent profile_update_confirm. S'il demande un conseil, une explication, une comparaison ou de l'aide à choisir sans demander explicitement de chercher des prestataires, réponds en conseil avec intent advice et ne lance pas de recherche. S'il demande explicitement de trouver/chercher/dénicher/proposer des prestataires, collecte ou lance la recherche selon le contexte.",
     "Ne présente aucun prestataire dans le chat."
   ].join("\n");
 }
@@ -390,11 +801,14 @@ function parseHadaState(content: string): { displayText: string; state: HadaStat
   const match = content.match(/HADA_STATE::(\{[\s\S]*\})\s*$/);
   const emptyState: HadaState = {
     status: "clarify",
+    intent: "advice",
     category: null,
+    location: null,
     style: null,
     constraints: null,
     budget: null,
-    searchQuery: null
+    searchQuery: null,
+    profileUpdate: null
   };
 
   if (!match?.[1]) {
@@ -407,11 +821,14 @@ function parseHadaState(content: string): { displayText: string; state: HadaStat
       displayText: content.replace(match[0], "").trim(),
       state: {
         status: raw.status === "ready" ? "ready" : "clarify",
+        intent: normalizeIntent(readString(raw.intent), raw.status === "ready" ? "search_ready" : "advice"),
         category: normalizeSearchCategory(readString(raw.category)),
+        location: readString(raw.location),
         style: readString(raw.style),
         constraints: readString(raw.constraints),
         budget: readString(raw.budget),
-        searchQuery: readString(raw.search_query) ?? readString(raw.searchQuery)
+        searchQuery: readString(raw.search_query) ?? readString(raw.searchQuery),
+        profileUpdate: sanitizeProfileUpdatePatch(raw.profile_update ?? raw.profileUpdate)
       }
     };
   } catch {
@@ -423,7 +840,9 @@ function buildPendingSearchMetadata(state: HadaState, userText: string, pending:
   return {
     pendingSearch: {
       status: "clarify",
+      intent: "search_collect",
       category: state.category ?? pending?.category ?? null,
+      location: state.location ?? pending?.location ?? null,
       style: state.style ?? pending?.style ?? null,
       constraints: state.constraints ?? pending?.constraints ?? null,
       budget: state.budget ?? pending?.budget ?? null,
@@ -432,6 +851,21 @@ function buildPendingSearchMetadata(state: HadaState, userText: string, pending:
       exchanges: (pending?.exchanges ?? 0) + 1
     }
   };
+}
+
+function normalizeIntent(value: string | null, fallback: HadaState["intent"]): HadaState["intent"] {
+  if (
+    value === "advice" ||
+    value === "search_collect" ||
+    value === "search_ready" ||
+    value === "profile_update" ||
+    value === "profile_update_confirm" ||
+    value === "contact_email" ||
+    value === "smalltalk"
+  ) {
+    return value;
+  }
+  return fallback;
 }
 
 async function clearPendingSearchIntake(supabase: ReturnType<typeof createSupabaseServerClient>, pending: PendingSearchIntake) {
@@ -456,7 +890,15 @@ function buildSearchPayloadFromState(
   pending: PendingSearchIntake | null
 ): SearchReadyPayload {
   const category = state.category ?? pending?.category ?? "venue";
-  const location = profile?.city ?? profile?.region ?? profile?.country ?? null;
+  const location =
+    state.location ??
+    pending?.location ??
+    extractRequestedLocationFromText([pending?.initialMessage, userText].filter(Boolean).join(" ")) ??
+    extractLocationFromSearchQuery(state.searchQuery ?? pending?.searchQuery ?? null) ??
+    profile?.city ??
+    profile?.region ??
+    profile?.country ??
+    null;
   const style = state.style ?? pending?.style ?? null;
   const constraints = state.constraints ?? pending?.constraints ?? null;
   const budget = state.budget ?? pending?.budget ?? null;
@@ -475,6 +917,132 @@ function buildSearchPayloadFromState(
       userText: [pending?.initialMessage, userText].filter(Boolean).join(" ")
     })
   };
+}
+
+function shouldBypassSearchCache(userText: string, state: HadaState, profile: Partial<WeddingProfile> | null) {
+  const normalized = normalizeText(userText);
+  if (/(nouveau|nouveaux|nouvelle|nouvelles|autre|autres|encore|plus de|relance|relancer|different|differents|differente|differentes)/.test(normalized)) {
+    return true;
+  }
+
+  const requestedLocation = normalizeProfileText(state.location ?? extractRequestedLocationFromText(userText));
+  const profileLocation = normalizeProfileText(profile?.city ?? profile?.region ?? null);
+  if (requestedLocation && profileLocation && normalizeText(requestedLocation) !== normalizeText(profileLocation)) {
+    return true;
+  }
+
+  return false;
+}
+
+function inferProfilePatchFromSearchRequest(
+  userText: string,
+  profile: Partial<WeddingProfile> | null,
+  state: HadaState
+): ProfileUpdatePatch | null {
+  const normalized = normalizeText(userText);
+  if (/sans modifier|ne modifie pas|pas mon profil|sans mettre a jour/.test(normalized)) return null;
+
+  const patch: ProfileUpdatePatch = {
+    wedding_date: null,
+    city: null,
+    region: null,
+    guest_count: null,
+    budget_min: null,
+    budget_max: null
+  };
+
+  const requestedLocation = normalizeProfileText(extractRequestedLocationFromText(userText));
+  const profileLocation = normalizeProfileText(profile?.city ?? profile?.region ?? null);
+  if (requestedLocation && profileLocation && normalizeText(requestedLocation) !== normalizeText(profileLocation)) {
+    patch.city = requestedLocation;
+  }
+
+  const requestedGuests = extractGuestCountFromText(userText);
+  if (requestedGuests && requestedGuests !== profile?.guest_count) {
+    patch.guest_count = requestedGuests;
+  }
+
+  const requestedBudget = extractBudgetFromText(userText);
+  const profileBudget = profile?.budget_max ?? profile?.budget_min ?? null;
+  if (requestedBudget && requestedBudget !== profileBudget) {
+    patch.budget_max = requestedBudget;
+  }
+
+  const requestedDate = extractWeddingDateFromText(userText);
+  if (requestedDate && requestedDate !== profile?.wedding_date) {
+    patch.wedding_date = requestedDate;
+  }
+
+  return sanitizeProfileUpdatePatch(patch);
+}
+
+function extractGuestCountFromText(value: string) {
+  const normalized = normalizeText(value);
+  const explicit = normalized.match(/(\d{1,4})\s*(invites|invitees|personnes|convives)/);
+  const loose = normalized.match(/\bpour\s+(\d{1,4})\b/);
+  const raw = explicit?.[1] ?? loose?.[1];
+  if (!raw) return null;
+  const guests = Number(raw);
+  return Number.isInteger(guests) && guests > 0 && guests <= 10000 ? guests : null;
+}
+
+function extractBudgetFromText(value: string) {
+  const normalized = normalizeText(value);
+  if (!/(budget|euros?|eur|€)/.test(normalized)) return null;
+  const match = normalized.match(/(\d{1,3}(?:[\s.]?\d{3})+|\d{2,6})\s*(k|€|eur|euros?)?/);
+  if (!match?.[1]) return null;
+  const amount = Number(match[1].replace(/[^\d]/g, "")) * (match[2] === "k" ? 1000 : 1);
+  return Number.isInteger(amount) && amount > 0 && amount <= 1000000 ? amount : null;
+}
+
+function extractWeddingDateFromText(value: string) {
+  const normalized = normalizeText(value);
+  const iso = normalized.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if (iso) return normalizeIsoDate(`${iso[1]}-${iso[2]}-${iso[3]}`);
+
+  const slash = normalized.match(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](20\d{2})\b/);
+  if (slash) return normalizeIsoDate(`${slash[3]}-${slash[2].padStart(2, "0")}-${slash[1].padStart(2, "0")}`);
+
+  const monthMatch = normalized.match(/\b(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)\s+(20\d{2})\b/);
+  if (!monthMatch) return null;
+
+  const monthIndex = [
+    "janvier",
+    "fevrier",
+    "mars",
+    "avril",
+    "mai",
+    "juin",
+    "juillet",
+    "aout",
+    "septembre",
+    "octobre",
+    "novembre",
+    "decembre"
+  ].indexOf(monthMatch[1]);
+
+  if (monthIndex === -1) return null;
+  return normalizeIsoDate(`${monthMatch[2]}-${String(monthIndex + 1).padStart(2, "0")}-01`);
+}
+
+function extractRequestedLocationFromText(value: string) {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  const patterns = [
+    /\b(?:a|à|sur|vers|près de|pres de|proche de|autour de)\s+([A-ZÀ-Ÿ][A-Za-zÀ-ÿ' -]{2,45})(?=$|[,.?!])/,
+    /\b(?:en|dans la|dans le)\s+(région\s+[A-Za-zÀ-ÿ' -]{3,45}|[A-ZÀ-Ÿ][A-Za-zÀ-ÿ' -]{2,45})(?=$|[,.?!])/
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    const location = match?.[1]?.trim();
+    if (!location) continue;
+    if (/^(un|une|le|la|les|mon|ma|mes|ton|ta|tes|notre|votre|jour|profil|lieu|traiteur|photographe|prestataire)$/i.test(location)) {
+      continue;
+    }
+    return location.slice(0, 80);
+  }
+
+  return null;
 }
 
 function ensureWeddingSearchQuery(
@@ -503,6 +1071,13 @@ function ensureWeddingSearchQuery(
   return nextQuery.replace(/\s+/g, " ").trim().slice(0, 180);
 }
 
+function extractLocationFromSearchQuery(query: string | null) {
+  if (!query) return null;
+  const normalized = query.replace(/\s+/g, " ").trim();
+  const match = normalized.match(/\bmariage\s+([\p{Lu}][\p{L}' -]{2,40})(?:\s|$)/u);
+  return match?.[1]?.trim() ?? null;
+}
+
 function buildMusicStyleKeywords(value: string) {
   const normalized = normalizeText(value);
   if (/jazz|jazzy/.test(normalized)) return "jazz acoustique standards";
@@ -525,9 +1100,9 @@ function buildExternalSearchCta(url?: string, finalFallback = false) {
   };
 }
 
-function looksLikeSearchLaunch(value: string) {
+function looksLikeAdviceRequest(value: string) {
   const normalized = normalizeText(value);
-  return /(je lance|je vais chercher|je cherche|je pars|je fouille|je deniche|je m y mets|je reviens tres vite|je vous reviens)/.test(normalized);
+  return /(conseil|conseils|comment choisir|aide moi a choisir|aidez moi a choisir|difference|comparer|avis sur|que dois je|quoi regarder|criteres|pieges|questions a poser)/.test(normalized);
 }
 
 function inferCategoryFromHistory(messages: ChatMessage[]) {
@@ -556,9 +1131,71 @@ function buildProfileBrief(profile: Partial<WeddingProfile> | null) {
   };
 }
 
+function computeProfileCompletionScore(payload: Partial<WeddingProfile> & { user_id?: string }) {
+  const trackedFields = [
+    payload.partner_one_name,
+    payload.partner_two_name,
+    payload.wedding_date ?? payload.wedding_period_text,
+    payload.city,
+    payload.guest_count,
+    payload.budget_min ?? payload.budget_max,
+    payload.style,
+    payload.ceremony_type
+  ];
+
+  const completed = trackedFields.filter(Boolean).length;
+  return Math.round((completed / trackedFields.length) * 100);
+}
+
+function sanitizeProfileUpdatePatch(value: unknown): ProfileUpdatePatch | null {
+  if (!value || typeof value !== "object") return null;
+
+  const raw = value as Record<string, unknown>;
+  const patch: ProfileUpdatePatch = {
+    wedding_date: normalizeIsoDate(readString(raw.wedding_date) ?? readString(raw.weddingDate)),
+    city: normalizeProfileText(readString(raw.city)),
+    region: normalizeProfileText(readString(raw.region)),
+    guest_count: normalizePositiveInteger(raw.guest_count ?? raw.guestCount, 10000),
+    budget_min: normalizePositiveInteger(raw.budget_min ?? raw.budgetMin, 1000000),
+    budget_max: normalizePositiveInteger(raw.budget_max ?? raw.budgetMax, 1000000)
+  };
+
+  if (patch.city && normalizeText(patch.city).includes("region parisienne") && !patch.region) {
+    patch.region = "Île-de-France";
+  }
+
+  if (patch.budget_min && patch.budget_max && patch.budget_min > patch.budget_max) {
+    const min = patch.budget_max;
+    patch.budget_max = patch.budget_min;
+    patch.budget_min = min;
+  }
+
+  return Object.values(patch).some((field) => field !== null) ? patch : null;
+}
+
+function normalizeProfileText(value: string | null) {
+  if (!value) return null;
+  return value.replace(/\s+/g, " ").trim().slice(0, 140) || null;
+}
+
+function normalizeIsoDate(value: string | null) {
+  if (!value) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : value;
+}
+
+function normalizePositiveInteger(value: unknown, max: number) {
+  const raw = typeof value === "number" ? value : typeof value === "string" ? Number(value.replace(/[^\d]/g, "")) : NaN;
+  if (!Number.isInteger(raw) || raw <= 0 || raw > max) return null;
+  return raw;
+}
+
 function toPendingBrief(pending: PendingSearchIntake) {
   return {
     category: pending.category,
+    location: pending.location,
     style: pending.style,
     constraints: pending.constraints,
     budget: pending.budget,
@@ -641,7 +1278,10 @@ async function runMistralChat(input: {
     })
   });
 
-  if (!response.ok) return null;
+  if (!response.ok) {
+    console.error("Mistral chat failed", response.status, await response.text());
+    return null;
+  }
 
   const result = await response.json();
   return result?.choices?.[0]?.message?.content?.trim() ?? null;

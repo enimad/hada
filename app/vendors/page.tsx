@@ -109,18 +109,16 @@ function VendorsPageContent() {
 
   const orderedCategories = useMemo(() => {
     return [...getVendorCategories()].sort((left, right) => {
-      const leftPriority = getCategoryPriority(left.key, candidates, categoryMap, reactions);
-      const rightPriority = getCategoryPriority(right.key, candidates, categoryMap, reactions);
+      const leftPriority = getCategoryPriority(left.key, categoryMap);
+      const rightPriority = getCategoryPriority(right.key, categoryMap);
 
       if (leftPriority !== rightPriority) {
         return leftPriority - rightPriority;
       }
 
-      const rightCount = categoryMap.get(right.key) ?? 0;
-      const leftCount = categoryMap.get(left.key) ?? 0;
-      return rightCount - leftCount;
+      return getCategoryDisplayIndex(left.key) - getCategoryDisplayIndex(right.key);
     });
-  }, [candidates, categoryMap, reactions]);
+  }, [categoryMap]);
 
   function markImageUnavailable(image: string) {
     setFailedImages((current) => (current.includes(image) ? current : [...current, image]));
@@ -223,7 +221,6 @@ function VendorsPageContent() {
                   const count = categoryMap.get(category.key) ?? 0;
                   const isFilled = count > 0;
                   const href = isFilled ? (category.key === "venue" ? "/venues" : `/vendors?category=${category.key}`) : null;
-                  const categoryReaction = getCategoryReaction(category.key, candidates, reactions);
                   const heroCandidate = getCategoryHeroCandidate(category.key, candidates, reactions, failedImages);
 
                   const card = (
@@ -245,7 +242,6 @@ function VendorsPageContent() {
                             <span className="text-[74px]">♡</span>
                           </div>
                         )}
-                        <ReactionBadge reaction={categoryReaction} className="right-4 top-4" />
                       </div>
                       <p className={`mt-4 text-[24px] font-semibold leading-[1.08] tracking-[-0.04em] ${isFilled ? "text-[var(--hada-navy)]" : "text-[#8f8582]"}`}>
                         {category.label}
@@ -352,27 +348,25 @@ function getCandidateSummary(candidate: VendorCandidateView) {
 
 function getCategoryPriority(
   category: VendorCategory,
-  candidates: VendorCandidateView[],
-  categoryMap: Map<VendorCategory, number>,
-  reactions: Record<string, VendorReaction>
+  categoryMap: Map<VendorCategory, number>
 ) {
   const count = categoryMap.get(category) ?? 0;
-  const reaction = getCategoryReaction(category, candidates, reactions);
+  return count > 0 ? 0 : 1;
+}
 
-  if (reaction === "liked") return 0;
-  if (count > 0 && reaction !== "disliked") return 1;
-  if (count === 0) return 2;
-  return 3;
+function getCategoryDisplayIndex(category: VendorCategory) {
+  const index = getVendorCategories().findIndex((item) => item.key === category);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 
 function ReactionBadge({ reaction, className = "left-4 top-4" }: { reaction: VendorReaction; className?: string }) {
-  if (!reaction) return null;
+  if (reaction !== "liked") return null;
 
-  const isLiked = reaction === "liked";
+  const isLiked = true;
   return (
     <div
       className={`absolute ${className} inline-flex h-10 min-w-[40px] items-center justify-center rounded-full px-3 text-[16px] font-semibold shadow-[0_10px_24px_rgba(46,28,54,0.14)] ${
-        isLiked ? "bg-[#fff0f1] text-[var(--hada-coral)]" : "bg-[#fff1f1] text-[#d94b58]"
+        "bg-[#fff0f1] text-[var(--hada-coral)]"
       }`}
     >
       <span aria-hidden="true">{isLiked ? "♡" : "👎"}</span>

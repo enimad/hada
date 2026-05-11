@@ -26,7 +26,7 @@ export default function ChatPage() {
   const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [streamedContent, setStreamedContent] = useState<Record<string, string>>({});
-  const [waitingLabel, setWaitingLabel] = useState("Hada prépare la recherche");
+  const [waitingLabel, setWaitingLabel] = useState("Hada réfléchit");
   const [betaToast, setBetaToast] = useState("");
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
@@ -117,6 +117,7 @@ export default function ChatPage() {
     if (!content || isSubmitting) return;
 
     const placeholderId = `assistant-typing-${Date.now()}`;
+    const expectsSearch = looksLikeSearchIntent(content);
     const optimisticMessage: UiChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -125,8 +126,8 @@ export default function ChatPage() {
 
     setMessages((current) => [...current, optimisticMessage, { id: placeholderId, role: "assistant", content: "" }]);
     setTypingMessageId(placeholderId);
-    setWaitingLabel("Hada prépare la recherche");
-    scheduleWaitingLabels();
+    setWaitingLabel(expectsSearch ? "Hada prépare la recherche" : "Hada réfléchit");
+    scheduleWaitingLabels(expectsSearch);
     setDraft("");
     setIsSubmitting(true);
 
@@ -180,12 +181,15 @@ export default function ChatPage() {
     }
   }
 
-  function scheduleWaitingLabels() {
+  function scheduleWaitingLabels(expectsSearch: boolean) {
     clearWaitingTimers();
+    if (!expectsSearch) return;
+
+    const labels = ["Recherche des prestataires en cours", "Vérification des résultats trouvés", "Création des fiches prestataires"];
     waitingTimeoutRefs.current = [
-      window.setTimeout(() => setWaitingLabel("Recherche des prestataires en cours"), 3500),
-      window.setTimeout(() => setWaitingLabel("Vérification des résultats trouvés"), 8500),
-      window.setTimeout(() => setWaitingLabel("Création des fiches prestataires"), 15000)
+      window.setTimeout(() => setWaitingLabel(labels[0]), 3500),
+      window.setTimeout(() => setWaitingLabel(labels[1]), 8500),
+      window.setTimeout(() => setWaitingLabel(labels[2]), 15000)
     ];
   }
 
@@ -510,6 +514,25 @@ function pickChunkSize(fullText: string, index: number) {
 
 function getBetaBannerKey(userId: string) {
   return `hada:chat-beta-hidden:${userId}`;
+}
+
+function looksLikeSearchIntent(value: string) {
+  const normalized = value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  const asksAdvice = /(conseil|conseils|comment choisir|aide moi a choisir|aidez moi a choisir|difference|comparer|avis sur|criteres|questions a poser)/.test(
+    normalized
+  );
+  if (asksAdvice) return false;
+
+  const hasSearchVerb = /(cherche|chercher|trouve|trouver|deniche|denicher|recommande|recommandation|propose|proposer)/.test(normalized);
+  const hasVendorType = /(prestataire|lieu|domaine|salle|traiteur|photographe|videaste|video|dj|musicien|groupe|fleuriste|decorateur|robe|costume|transport)/.test(
+    normalized
+  );
+
+  return hasSearchVerb && hasVendorType;
 }
 
 function parseMessageBlocks(content: string) {

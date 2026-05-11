@@ -249,6 +249,7 @@ export async function createSearchResultsForUser(
         userId: input.userId,
         category: input.search.category,
         query: input.search.searchQuery,
+        location: input.search.location,
         profile: input.profile,
         mode: "strict"
       });
@@ -261,6 +262,7 @@ export async function createSearchResultsForUser(
       userId: input.userId,
       category: input.search.category,
       query: buildExpandedSearchQuery(input.search, input.profile),
+      location: input.search.location,
       profile: input.profile,
       mode: "expanded"
     });
@@ -297,6 +299,7 @@ export async function createSearchResultsForUser(
       candidates = [];
     }
 
+    const existingSlugs = await loadExistingCandidateSlugs(supabase, input.userId);
     const payload = usableNormalizedCandidates.map(({ candidate, normalized }) => {
       const vendorProfile = normalized.vendorProfile;
       const photos = vendorProfile.media.photos;
@@ -304,6 +307,7 @@ export async function createSearchResultsForUser(
       const email = vendorProfile.contact.email ?? candidate.email;
       const phone = vendorProfile.contact.phone ?? candidate.phone;
       const location = vendorProfile.identity.location_label || candidate.city || candidate.region;
+      const slug = buildUniqueCandidateSlug(vendorProfile.identity.name || candidate.name, existingSlugs);
 
       return {
         vendor_request_id: request.id,
@@ -319,7 +323,7 @@ export async function createSearchResultsForUser(
         summary: vendorProfile.summary.about ?? candidate.summary,
         source_url: candidate.sourceUrl,
         metadata_json: {
-          slug: slugify(vendorProfile.identity.name || candidate.name),
+          slug,
           vendor_profile: vendorProfile,
           raw_firecrawl: candidate,
           normalized_at: new Date().toISOString(),
@@ -916,6 +920,46 @@ function slugify(value: string | null | undefined) {
     .replace(/^-+|-+$/g, "");
 
   return slug || "prestataire";
+}
+
+async function loadExistingCandidateSlugs(supabase: SupabaseClient, userId: string) {
+  const { data: requests } = await supabase
+    .from("vendor_requests")
+    .select("id")
+    .eq("user_id", userId)
+    .limit(200);
+
+  const requestIds = (requests ?? []).map((request) => request.id).filter(isString);
+  if (requestIds.length === 0) return new Set<string>();
+
+  const { data: candidates } = await supabase
+    .from("vendor_candidates")
+    .select("name, metadata_json")
+    .in("vendor_request_id", requestIds)
+    .limit(500);
+
+  return new Set(
+    (candidates ?? [])
+      .map((candidate) => {
+        const metadata = (candidate.metadata_json ?? {}) as Record<string, unknown>;
+        return readOptionalString(metadata.slug) ?? slugify(candidate.name);
+      })
+      .filter(isString)
+  );
+}
+
+function buildUniqueCandidateSlug(name: string | null | undefined, usedSlugs: Set<string>) {
+  const base = slugify(name);
+  let slug = base;
+  let suffix = 2;
+
+  while (usedSlugs.has(slug)) {
+    slug = `${base}-${suffix}`;
+    suffix += 1;
+  }
+
+  usedSlugs.add(slug);
+  return slug;
 }
 
 function estimatePriceValue(priceRange: string | null | undefined) {
