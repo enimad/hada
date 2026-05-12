@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { env } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function POST(request: NextRequest) {
@@ -26,15 +28,32 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Un compte existe déjà avec cette adresse email." }, { status: 409 });
   }
 
-  const { error } = await supabase.auth.admin.createUser({
+  const authClient = createClient(env.supabaseUrl, env.supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    }
+  });
+
+  const { error } = await authClient.auth.signUp({
     email,
     password,
-    email_confirm: true
+    options: {
+      emailRedirectTo: `${env.appUrl}/auth/continue`
+    }
   });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const isEmailRateLimit = /email rate limit/i.test(error.message);
+    return NextResponse.json(
+      {
+        error: isEmailRateLimit
+          ? "Trop d'emails de confirmation ont été envoyés récemment. Réessayez dans quelques minutes."
+          : error.message
+      },
+      { status: isEmailRateLimit ? 429 : 500 }
+    );
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, requiresEmailConfirmation: true });
 }

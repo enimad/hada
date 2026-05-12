@@ -26,12 +26,7 @@ export function MobileScreen({
 }
 
 export function BottomHint() {
-  return (
-    <div className="mt-auto flex items-center justify-center gap-2 pt-12 text-center text-[14px] font-medium text-[#b8aea8] sm:text-[16px]">
-      <ShieldIcon className="h-5 w-5 shrink-0" />
-      <span>Personnalise pour votre mariage unique</span>
-    </div>
-  );
+  return null;
 }
 
 export function HadaWordmark({ className = "" }: { className?: string }) {

@@ -1,13 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { EyeIcon, EyeOffIcon, LineInput, MainButton, MobileScreen } from "@/components/mobile-screen";
 
 export default function SignupPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -51,15 +48,9 @@ export default function SignupPage() {
               return;
             }
 
-            const supabase = createSupabaseBrowserClient();
-            const { error } = await supabase.auth.signInWithPassword({ email, password });
-
-            if (error) {
-              setMessage("Compte créé, mais la connexion automatique a échoué. Essayez de vous connecter.");
-              return;
-            }
-
-            router.replace("/onboarding");
+            setMessage("Compte créé. Vérifiez votre email pour confirmer votre compte, puis poursuivez avec le lien reçu.");
+            setPassword("");
+            setAcceptedTerms(false);
           });
         }}
       >
