@@ -23,6 +23,12 @@ export default function HomePage() {
     const supabase = createSupabaseBrowserClient();
 
     async function clearPublicEntrySession() {
+      const currentUrl = new URL(window.location.href);
+      if (currentUrl.searchParams.has("code")) {
+        router.replace(`/auth/continue${currentUrl.search}`);
+        return;
+      }
+
       try {
         await supabase.auth.signOut({ scope: "local" });
       } catch {}
@@ -40,7 +46,7 @@ export default function HomePage() {
     }
 
     void clearPublicEntrySession();
-  }, []);
+  }, [router]);
 
   function submitEmail() {
     startTransition(async () => {

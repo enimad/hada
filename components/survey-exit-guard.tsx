@@ -23,6 +23,10 @@ type SurveyAnswers = {
   appreciated: string;
   frustrated: string;
   reuseIntent: string;
+  tooExpensivePrice: string;
+  expensiveButAcceptablePrice: string;
+  goodDealPrice: string;
+  tooCheapPrice: string;
   dreamFeature: string;
 };
 
@@ -72,6 +76,10 @@ export function SurveyModalHost() {
     appreciated: "",
     frustrated: "",
     reuseIntent: "",
+    tooExpensivePrice: "",
+    expensiveButAcceptablePrice: "",
+    goodDealPrice: "",
+    tooCheapPrice: "",
     dreamFeature: ""
   });
   const [error, setError] = useState("");
@@ -82,6 +90,10 @@ export function SurveyModalHost() {
     if (step === 2) return answers.appreciated.trim().length > 0;
     if (step === 3) return answers.frustrated.trim().length > 0;
     if (step === 4) return answers.reuseIntent.trim().length > 0;
+    if (step === 6) return answers.tooExpensivePrice.trim().length > 0;
+    if (step === 7) return answers.expensiveButAcceptablePrice.trim().length > 0;
+    if (step === 8) return answers.goodDealPrice.trim().length > 0;
+    if (step === 9) return answers.tooCheapPrice.trim().length > 0;
     return true;
   }, [answers, step]);
 
@@ -146,13 +158,16 @@ export function SurveyModalHost() {
       setError("Une petite réponse ici, et on continue.");
       return;
     }
-    setStep((current) => Math.min(current + 1, 5));
+    setStep((current) => Math.min(current + 1, 10));
   }
 
   async function submitSurvey() {
-    if (step !== 5) return;
-
     setError("");
+    if (!currentQuestionIsValid) {
+      setError("Une petite rÃ©ponse ici, et on continue.");
+      return;
+    }
+
     setIsSubmitting(true);
     const currentSurvey = pendingSurvey;
     if (!currentSurvey) {
@@ -184,6 +199,10 @@ export function SurveyModalHost() {
           appreciated: answers.appreciated,
           frustrated: answers.frustrated,
           reuseIntent: answers.reuseIntent,
+          tooExpensivePrice: answers.tooExpensivePrice,
+          expensiveButAcceptablePrice: answers.expensiveButAcceptablePrice,
+          goodDealPrice: answers.goodDealPrice,
+          tooCheapPrice: answers.tooCheapPrice,
           dreamFeature: answers.dreamFeature
         })
       });
@@ -196,7 +215,7 @@ export function SurveyModalHost() {
 
       sessionStorage.setItem(SURVEY_DONE_KEY, "1");
       sessionStorage.removeItem(SURVEY_PENDING_KEY);
-      setStep(6);
+      setStep(11);
     } finally {
       setIsSubmitting(false);
     }
@@ -210,7 +229,7 @@ export function SurveyModalHost() {
         className="w-full max-w-[560px] overflow-hidden rounded-[34px] border border-white/70 bg-[#fffaf7] shadow-[0_30px_80px_rgba(43,33,79,0.25)]"
       >
         <div className="relative p-6 sm:p-8">
-          {step === 6 ? (
+          {step === 11 ? (
             <button
               type="button"
               onClick={closeThanks}
@@ -222,7 +241,7 @@ export function SurveyModalHost() {
           ) : null}
 
           <div className="mb-6 h-1.5 overflow-hidden rounded-full bg-[#f4e7e2]">
-            <div className="h-full rounded-full bg-[var(--hada-coral)] transition-all" style={{ width: `${((step + 1) / 7) * 100}%` }} />
+            <div className="h-full rounded-full bg-[var(--hada-coral)] transition-all" style={{ width: `${((step + 1) / 12) * 100}%` }} />
           </div>
 
           {step === 0 ? <IntroStep /> : null}
@@ -249,13 +268,41 @@ export function SurveyModalHost() {
             />
           ) : null}
           {step === 5 ? <DreamFeatureStep value={answers.dreamFeature} onChange={(dreamFeature) => setAnswers((current) => ({ ...current, dreamFeature }))} /> : null}
-          {step === 6 ? <ThanksStep coupleNames={coupleNames} /> : null}
+          {step === 6 ? (
+            <TextStep
+              label="À partir de quel prix est-ce trop cher ?"
+              value={answers.tooExpensivePrice}
+              onChange={(tooExpensivePrice) => setAnswers((current) => ({ ...current, tooExpensivePrice }))}
+            />
+          ) : null}
+          {step === 7 ? (
+            <TextStep
+              label="À partir de quel prix est-ce cher, mais encore acceptable ?"
+              value={answers.expensiveButAcceptablePrice}
+              onChange={(expensiveButAcceptablePrice) => setAnswers((current) => ({ ...current, expensiveButAcceptablePrice }))}
+            />
+          ) : null}
+          {step === 8 ? (
+            <TextStep
+              label="En dessous de quel prix est-ce une bonne affaire ?"
+              value={answers.goodDealPrice}
+              onChange={(goodDealPrice) => setAnswers((current) => ({ ...current, goodDealPrice }))}
+            />
+          ) : null}
+          {step === 9 ? (
+            <TextStep
+              label="En dessous de quel prix est-ce trop bon marché ?"
+              value={answers.tooCheapPrice}
+              onChange={(tooCheapPrice) => setAnswers((current) => ({ ...current, tooCheapPrice }))}
+            />
+          ) : null}
+          {step === 11 ? <ThanksStep coupleNames={coupleNames} /> : null}
 
           {error ? <p className="mt-4 rounded-2xl bg-[#fff0f1] px-4 py-3 text-[14px] font-medium text-[var(--hada-coral)]">{error}</p> : null}
 
-          {step < 6 ? (
+          {step < 11 ? (
             <div className="mt-7 flex justify-end">
-              {step < 5 ? (
+              {step < 9 ? (
                 <button
                   type="button"
                   onClick={handleNext}
@@ -266,11 +313,11 @@ export function SurveyModalHost() {
               ) : (
                 <button
                   type="button"
-                  onClick={submitSurvey}
+                  onClick={step === 9 ? submitSurvey : handleNext}
                   disabled={isSubmitting}
                   className="h-12 w-full rounded-full bg-[var(--hada-coral)] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_14px_30px_rgba(255,96,116,0.25)] disabled:opacity-60 sm:w-auto"
                 >
-                  {isSubmitting ? "Envoi..." : "Envoyer mon retour"}
+                  {step === 9 ? (isSubmitting ? "Envoi..." : "Envoyer mon retour") : "Continuer"}
                 </button>
               )}
             </div>

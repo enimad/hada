@@ -259,7 +259,14 @@ export async function POST(request: NextRequest) {
       const assistantContent =
         parsed.state.intent === "profile_update_confirm"
           ? parsed.displayText || buildProfileUpdateConfirmationMessage(parsed.state.profileUpdate)
-          : parsed.displayText || buildEmptyAssistantFallback(parsed.state.intent);
+          : parsed.displayText ||
+            (await buildNaturalAssistantFallback({
+              profile,
+              historyForModel,
+              userText: content,
+              intent: parsed.state.intent
+            })) ||
+            buildEmptyAssistantFallback(parsed.state.intent);
 
       const assistantMessage = await insertConversationMessage(supabase, {
         conversationId: conversation.id,
@@ -706,7 +713,33 @@ function buildEmptyAssistantFallback(intent: HadaState["intent"]) {
     return "Je vous suis. Donnez-moi juste l'envie principale pour cette recherche, et je m'en occupe.";
   }
 
-  return "Je suis là, dites-moi ce que vous souhaitez faire et je m'adapte.";
+  return "Je vous ai lue, mais ma réponse s'est perdue en route. Reformulez-moi ça en une phrase et je reprends avec vous.";
+}
+
+async function buildNaturalAssistantFallback(input: {
+  profile: Partial<WeddingProfile> | null;
+  historyForModel: ChatMessage[];
+  userText: string;
+  intent: HadaState["intent"];
+}) {
+  if (input.intent === "profile_update" || input.intent === "profile_update_confirm" || input.intent === "search_collect" || input.intent === "search_ready") {
+    return null;
+  }
+
+  return runMistralChat({
+    systemPrompt: [
+      "Tu es Hada, une wedding planner française chaleureuse, vive et rassurante.",
+      "Réponds au dernier message du couple en 1 à 3 phrases, uniquement en français.",
+      "Ne lance aucune recherche, ne mets pas le profil à jour, ne produis pas de JSON ni de balise technique.",
+      "Si le sujet est hors mariage, réponds naturellement et brièvement, avec tact, puis recentre doucement si utile.",
+      "Ne réponds jamais par une formule générique comme \"Je suis là, dites-moi ce que vous souhaitez faire et je m'adapte\".",
+      `Profil couple : ${JSON.stringify(buildProfileBrief(input.profile))}`
+    ].join("\n"),
+    historyForModel: input.historyForModel,
+    maxTokens: 300,
+    temperature: 0.55,
+    extraUserInstruction: `Dernier message du couple : ${input.userText}`
+  });
 }
 
 function formatProfileUpdatePatch(patch: ProfileUpdatePatch | null) {

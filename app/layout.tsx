@@ -4,7 +4,12 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Hada",
-  description: "Hada, assistant IA de planification de mariage avec onboarding, chat et recherche de prestataires."
+  description: "Hada, assistant IA de planification de mariage avec onboarding, chat et recherche de prestataires.",
+  icons: {
+    icon: "/icon.png",
+    shortcut: "/icon.png",
+    apple: "/icon.png"
+  }
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

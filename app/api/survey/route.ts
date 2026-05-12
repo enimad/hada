@@ -10,6 +10,10 @@ type SurveyPayload = {
   appreciated?: string;
   frustrated?: string;
   reuseIntent?: string;
+  tooExpensivePrice?: string;
+  expensiveButAcceptablePrice?: string;
+  goodDealPrice?: string;
+  tooCheapPrice?: string;
   dreamFeature?: string;
 };
 
@@ -42,18 +46,31 @@ export async function POST(request: NextRequest) {
   const appreciated = normalizeAnswer(body.appreciated);
   const frustrated = normalizeAnswer(body.frustrated);
   const reuseIntent = normalizeAnswer(body.reuseIntent);
-  if (!appreciated || !frustrated || !reuseIntent) {
+  const tooExpensivePrice = normalizeAnswer(body.tooExpensivePrice);
+  const expensiveButAcceptablePrice = normalizeAnswer(body.expensiveButAcceptablePrice);
+  const goodDealPrice = normalizeAnswer(body.goodDealPrice);
+  const tooCheapPrice = normalizeAnswer(body.tooCheapPrice);
+
+  if (!appreciated || !frustrated || !reuseIntent || !tooExpensivePrice || !expensiveButAcceptablePrice || !goodDealPrice || !tooCheapPrice) {
     return NextResponse.json({ error: "Réponses obligatoires manquantes." }, { status: 400 });
   }
 
   const supabase = createSupabaseServerClient();
   const context = await buildSurveyContext(supabase, user.id, user.email ?? null);
-  const emailText = buildSurveyEmailText({
+  const surveyAnswers = {
     rating,
     appreciated,
     frustrated,
     reuseIntent,
-    dreamFeature: normalizeAnswer(body.dreamFeature),
+    tooExpensivePrice,
+    expensiveButAcceptablePrice,
+    goodDealPrice,
+    tooCheapPrice,
+    dreamFeature: normalizeAnswer(body.dreamFeature)
+  };
+
+  const emailText = buildSurveyEmailText({
+    ...surveyAnswers,
     sourcePath: body.sourcePath ?? null,
     sourceVendorSlug: body.sourceVendorSlug ?? null,
     context
@@ -68,8 +85,11 @@ export async function POST(request: NextRequest) {
     appreciated,
     frustrated,
     reuse_intent: reuseIntent,
-    dream_feature: normalizeAnswer(body.dreamFeature),
-    context_json: context,
+    dream_feature: surveyAnswers.dreamFeature,
+    context_json: {
+      ...context,
+      surveyAnswers
+    },
     email_sent: emailSent
   });
 
@@ -130,6 +150,10 @@ function buildSurveyEmailText({
   appreciated,
   frustrated,
   reuseIntent,
+  tooExpensivePrice,
+  expensiveButAcceptablePrice,
+  goodDealPrice,
+  tooCheapPrice,
   dreamFeature,
   sourcePath,
   sourceVendorSlug,
@@ -139,6 +163,10 @@ function buildSurveyEmailText({
   appreciated: string;
   frustrated: string;
   reuseIntent: string;
+  tooExpensivePrice: string;
+  expensiveButAcceptablePrice: string;
+  goodDealPrice: string;
+  tooCheapPrice: string;
   dreamFeature: string;
   sourcePath: string | null;
   sourceVendorSlug: string | null;
@@ -160,6 +188,12 @@ function buildSurveyEmailText({
     "",
     "Réutilisation de Hada :",
     reuseIntent,
+    "",
+    "Sensibilité prix :",
+    `Trop cher à partir de : ${tooExpensivePrice}`,
+    `Cher mais encore acceptable à partir de : ${expensiveButAcceptablePrice}`,
+    `Bonne affaire en dessous de : ${goodDealPrice}`,
+    `Trop bon marché en dessous de : ${tooCheapPrice}`,
     "",
     "Feature rêvée :",
     dreamFeature || "Non renseigné",
