@@ -90,6 +90,7 @@ export function SurveyModalHost() {
     if (step === 2) return answers.appreciated.trim().length > 0;
     if (step === 3) return answers.frustrated.trim().length > 0;
     if (step === 4) return answers.reuseIntent.trim().length > 0;
+    if (step === 5) return answers.dreamFeature.trim().length > 0;
     if (step === 6) return answers.tooExpensivePrice.trim().length > 0;
     if (step === 7) return answers.expensiveButAcceptablePrice.trim().length > 0;
     if (step === 8) return answers.goodDealPrice.trim().length > 0;
@@ -406,8 +407,8 @@ function DreamFeatureStep({ value, onChange }: { value: string; onChange: (value
       <p className="text-[17px] leading-8 text-[#61596f]">
         On travaille en ce moment sur des choses qu'on a hâte de vous montrer : automatiser la prise de contact avec vos prestataires, un guide étape par étape encore plus poussé... et quelques surprises qu'on garde sous le coude pour l'instant. 👀
       </p>
-      <p className="mt-5 text-[19px] font-semibold leading-7 text-[var(--hada-navy)]">Et vous, c'est quoi la feature dont vous rêvez ?</p>
-      <SurveyTextarea value={value} onChange={onChange} rows={4} placeholder="Champ optionnel" />
+      <QuestionLabel required>Et vous, c'est quoi la feature dont vous rêvez ?</QuestionLabel>
+      <SurveyTextarea value={value} onChange={onChange} rows={4} placeholder="Votre réponse" />
     </div>
   );
 }
