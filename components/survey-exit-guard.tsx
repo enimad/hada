@@ -28,6 +28,7 @@ type SurveyAnswers = {
   goodDealPrice: string;
   tooCheapPrice: string;
   dreamFeature: string;
+  pricingModels: string[];
 };
 
 type ProfileResponse = {
@@ -80,7 +81,8 @@ export function SurveyModalHost() {
     expensiveButAcceptablePrice: "",
     goodDealPrice: "",
     tooCheapPrice: "",
-    dreamFeature: ""
+    dreamFeature: "",
+    pricingModels: []
   });
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -95,6 +97,7 @@ export function SurveyModalHost() {
     if (step === 7) return answers.expensiveButAcceptablePrice.trim().length > 0;
     if (step === 8) return answers.goodDealPrice.trim().length > 0;
     if (step === 9) return answers.tooCheapPrice.trim().length > 0;
+    if (step === 10) return answers.pricingModels.length > 0;
     return true;
   }, [answers, step]);
 
@@ -159,7 +162,7 @@ export function SurveyModalHost() {
       setError("Une petite réponse ici, et on continue.");
       return;
     }
-    setStep((current) => Math.min(current + 1, 10));
+    setStep((current) => Math.min(current + 1, 11));
   }
 
   async function submitSurvey() {
@@ -204,7 +207,8 @@ export function SurveyModalHost() {
           expensiveButAcceptablePrice: answers.expensiveButAcceptablePrice,
           goodDealPrice: answers.goodDealPrice,
           tooCheapPrice: answers.tooCheapPrice,
-          dreamFeature: answers.dreamFeature
+          dreamFeature: answers.dreamFeature,
+          pricingModels: answers.pricingModels
         })
       });
 
@@ -216,7 +220,7 @@ export function SurveyModalHost() {
 
       sessionStorage.setItem(SURVEY_DONE_KEY, "1");
       sessionStorage.removeItem(SURVEY_PENDING_KEY);
-      setStep(11);
+      setStep(12);
     } finally {
       setIsSubmitting(false);
     }
@@ -230,7 +234,7 @@ export function SurveyModalHost() {
         className="w-full max-w-[560px] overflow-hidden rounded-[34px] border border-white/70 bg-[#fffaf7] shadow-[0_30px_80px_rgba(43,33,79,0.25)]"
       >
         <div className="relative p-6 sm:p-8">
-          {step === 11 ? (
+          {step === 12 ? (
             <button
               type="button"
               onClick={closeThanks}
@@ -242,7 +246,7 @@ export function SurveyModalHost() {
           ) : null}
 
           <div className="mb-6 h-1.5 overflow-hidden rounded-full bg-[#f4e7e2]">
-            <div className="h-full rounded-full bg-[var(--hada-coral)] transition-all" style={{ width: `${((step + 1) / 12) * 100}%` }} />
+            <div className="h-full rounded-full bg-[var(--hada-coral)] transition-all" style={{ width: `${((step + 1) / 13) * 100}%` }} />
           </div>
 
           {step === 0 ? <IntroStep /> : null}
@@ -297,13 +301,19 @@ export function SurveyModalHost() {
               onChange={(tooCheapPrice) => setAnswers((current) => ({ ...current, tooCheapPrice }))}
             />
           ) : null}
-          {step === 11 ? <ThanksStep coupleNames={coupleNames} /> : null}
+          {step === 10 ? (
+            <PricingModelStep
+              value={answers.pricingModels}
+              onChange={(pricingModels) => setAnswers((current) => ({ ...current, pricingModels }))}
+            />
+          ) : null}
+          {step === 12 ? <ThanksStep coupleNames={coupleNames} /> : null}
 
           {error ? <p className="mt-4 rounded-2xl bg-[#fff0f1] px-4 py-3 text-[14px] font-medium text-[var(--hada-coral)]">{error}</p> : null}
 
-          {step < 11 ? (
+          {step < 12 ? (
             <div className="mt-7 flex justify-end">
-              {step < 9 ? (
+              {step < 10 ? (
                 <button
                   type="button"
                   onClick={handleNext}
@@ -314,11 +324,11 @@ export function SurveyModalHost() {
               ) : (
                 <button
                   type="button"
-                  onClick={step === 9 ? submitSurvey : handleNext}
+                  onClick={step === 10 ? submitSurvey : handleNext}
                   disabled={isSubmitting}
                   className="h-12 w-full rounded-full bg-[var(--hada-coral)] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_14px_30px_rgba(255,96,116,0.25)] disabled:opacity-60 sm:w-auto"
                 >
-                  {step === 9 ? (isSubmitting ? "Envoi..." : "Envoyer mon retour") : "Continuer"}
+                  {step === 10 ? (isSubmitting ? "Envoi..." : "Envoyer mon retour") : "Continuer"}
                 </button>
               )}
             </div>
@@ -409,6 +419,73 @@ function DreamFeatureStep({ value, onChange }: { value: string; onChange: (value
       </p>
       <QuestionLabel required>Et vous, c'est quoi la feature dont vous rêvez ?</QuestionLabel>
       <SurveyTextarea value={value} onChange={onChange} rows={4} placeholder="Votre réponse" />
+    </div>
+  );
+}
+
+const PRICING_MODEL_OPTIONS = [
+  {
+    value: "Abonnement mensuel",
+    label: "Abonnement mensuel",
+    description: "Un paiement mensuel pour débloquer des fonctionnalités premium jusqu’au jour J, résiliable à tout moment."
+  },
+  {
+    value: "Paiement unique",
+    label: "Paiement unique",
+    description: "Un seul paiement, plus élevé qu’un mois d’abonnement, pour accéder à des fonctionnalités premium jusqu’au jour J."
+  },
+  {
+    value: "Système de crédits",
+    label: "Système de crédits",
+    description: "Vous consommez des crédits à chaque utilisation d'une fonctionnalité premium. Vous pouvez recharger ces crédits par des paiements ponctuels selon vos besoins."
+  }
+];
+
+function PricingModelStep({ value, onChange }: { value: string[]; onChange: (value: string[]) => void }) {
+  function toggleOption(option: string) {
+    onChange(value.includes(option) ? value.filter((item) => item !== option) : [...value, option]);
+  }
+
+  return (
+    <div>
+      <div className="rounded-[26px] border border-[#ffd4d8] bg-[#fff0f1] p-4">
+        <p className="text-[14px] font-semibold uppercase tracking-[0.14em] text-[var(--hada-coral)]">Enquête de pricing</p>
+        <p className="mt-3 text-[16px] leading-7 text-[#61596f]">
+          <span aria-hidden="true">ℹ️</span>{" "}
+          Une partie des fonctionnalités seront gratuites mais nous sommes en train de définir le modèle de monétisation pour les fonctionnalités premium et nous avons besoin de votre avis.
+        </p>
+      </div>
+
+      <QuestionLabel required>En fonction de vos habitudes, quel(s) modèle(s) de paiement préférez-vous ?</QuestionLabel>
+      <p className="mt-2 text-[14px] font-medium text-[#8a817d]">Plusieurs réponses possibles.</p>
+
+      <div className="mt-6 space-y-3">
+        {PRICING_MODEL_OPTIONS.map((option) => {
+          const selected = value.includes(option.value);
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => toggleOption(option.value)}
+              className={`flex w-full items-start gap-4 rounded-[24px] border px-4 py-4 text-left transition ${
+                selected ? "border-[var(--hada-coral)] bg-[#fff0f1]" : "border-[#eadfda] bg-white"
+              }`}
+            >
+              <span
+                className={`mt-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] border ${
+                  selected ? "border-[var(--hada-coral)] bg-[var(--hada-coral)] text-white" : "border-[#b9b0ad] bg-white text-transparent"
+                }`}
+                aria-hidden="true"
+              >
+                ✓
+              </span>
+              <span className="text-[15px] leading-6 text-[var(--hada-navy)]">
+                <strong>{option.label}</strong> — {option.description}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
