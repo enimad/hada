@@ -1,30 +1,53 @@
 # Hada
 
-MVP de web app pour accompagner un couple dans l'organisation de son mariage avec Hada:
+Hada est une web app beta de wedding planner IA. Elle aide un couple a structurer son projet de mariage, discuter avec Hada, rechercher des prestataires et preparer les premiers contacts.
 
-- authentification
-- onboarding mariage
-- chat IA contextualise
-- qualification du besoin prestataire
-- recherche de prestataires
-- prise de contact assistee
+## Etat actuel
 
-## Stack retenue
+Le socle produit disponible dans ce depot couvre:
+
+- accueil public avec routage email vers inscription ou connexion
+- landing page publique sur `/`
+- blog SEO sur `/blog` avec articles Markdown programmes
+- administration Decap CMS sur `/admin`
+- authentification Supabase email/password avec confirmation email
+- connexion Google via Supabase OAuth
+- onboarding mariage en 5 etapes
+- page `Mon mariage` editable
+- chat Hada persistant avec contexte mariage
+- moteur experimental `chat-v2` sur `/chat-v2` et `/api/chat-v2`
+- pages `Budget` et `Mon offre`
+- recherche de prestataires depuis le chat
+- recherche web Firecrawl avec rotation de cles et fallback catalogue local
+- normalisation de fiches prestataires via Mistral
+- pages de selection et de detail prestataire
+- brouillon email de contact via `mailto:`
+- journalisation des prises de contact
+- popup survey avec questions produit et pricing
+
+Le depot local est aligne avec `origin/main` sur `git@github.com:enimad/hada.git`.
+
+## Stack
 
 - Frontend: Next.js App Router + TypeScript
 - UI: Tailwind CSS
-- Database: Supabase Postgres
-- Auth + Backend data: Supabase
-- Chat IA: Mistral AI via API HTTP
+- Auth et database: Supabase
+- Chat IA: Mistral API
+- Orchestration chat-v2: Google + fallback Mistral
+- Recherche web: Firecrawl
+- CMS blog: Decap CMS + GitHub OAuth
+- Email survey optionnel: Resend
 
-## Ce qui est deja dans ce dossier
+## Commandes
 
-- squelette Next.js
-- pages `login`, `signup`, `onboarding`, `chat`
-- route API `profile`
-- route API `chat`
-- schema SQL Supabase
-- documentation produit et architecture
+```powershell
+npm install
+npm run dev
+npm run typecheck
+npm run build
+```
+
+Note: aucun lint automatisable n'est configure pour le moment. L'ancien `next lint` a ete retire car il est deprecie et ouvrait une configuration interactive.
 
 ## Variables d'environnement
 
@@ -32,41 +55,43 @@ Copier `.env.example` vers `.env.local`.
 
 Variables requises:
 
+- `NEXT_PUBLIC_APP_URL`
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `MISTRAL_API_KEY`
 - `MISTRAL_MODEL`
 
+Variables optionnelles:
+
+- `GOOGLE_API_KEY`
+- `GOOGLE_MODEL`
+- `DECAP_GITHUB_CLIENT_ID`
+- `DECAP_GITHUB_CLIENT_SECRET`
+- `FIRECRAWL_API_KEY`
+- `FIRECRAWL_API_KEYS`
+- `MISTRAL_VENDOR_PROFILE_AGENT_ID`
+- `MISTRAL_VENDOR_PROFILE_AGENT_VERSION`
+- `RESEND_API_KEY`
+- `SURVEY_NOTIFY_TO`
+- `SURVEY_NOTIFY_FROM`
+
 ## Supabase
 
-Le plus simple est de creer un projet Supabase dedie a Hada.
+Le schema de reference est [supabase/schema.sql](supabase/schema.sql).
 
-1. Creer un nouveau projet sur Supabase
-2. Recuperer l'URL du projet
-3. Recuperer la `anon key`
-4. Recuperer la `service role key`
-5. Executer le SQL de [supabase/schema.sql](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/supabase/schema.sql)
+Les routes serveur utilisent aujourd'hui la `SUPABASE_SERVICE_ROLE_KEY`; les tables ont RLS activee, mais les policies utilisateur fines restent a durcir avant une montee en charge.
 
-Guide detaille: [docs/setup.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/setup.md)
+## Documentation
 
-## GitHub
-
-Le projet local est initialise en Git et pointe vers `https://github.com/enimad/hada.git`.
-
-Etat actuel:
-
-- commits locaux crees
-- remote `origin` configure vers `enimad/hada`
-- push GitHub bloque ici par l'authentification HTTPS non interactive du terminal
-
-La suite et les commandes utiles sont dans [docs/setup.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/setup.md)
-
-## Documents produit
-
-- [docs/product-blueprint.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/product-blueprint.md)
-- [docs/system-architecture.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/system-architecture.md)
-- [docs/database-schema.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/database-schema.md)
-- [docs/conversation-flows.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/conversation-flows.md)
-- [docs/mvp-api.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/mvp-api.md)
-- [docs/roadmap.md](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/docs/roadmap.md)
+- [docs/setup.md](docs/setup.md): reprise locale
+- [docs/deploy.md](docs/deploy.md): deploiement Vercel, Supabase, OAuth
+- [docs/chat-v2-engine.md](docs/chat-v2-engine.md): architecture du moteur chat-v2
+- [docs/decap-cms-setup.md](docs/decap-cms-setup.md): configuration Decap/GitHub OAuth
+- [docs/decap-cms-editor-guide.md](docs/decap-cms-editor-guide.md): publication d'articles blog
+- [docs/system-architecture.md](docs/system-architecture.md): architecture actuelle
+- [docs/database-schema.md](docs/database-schema.md): schema Supabase utilise
+- [docs/mvp-api.md](docs/mvp-api.md): routes API reelles
+- [docs/conversation-flows.md](docs/conversation-flows.md): flux chat et recherche
+- [docs/product-blueprint.md](docs/product-blueprint.md): positionnement produit
+- [docs/roadmap.md](docs/roadmap.md): priorites restantes

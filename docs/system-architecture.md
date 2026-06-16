@@ -1,115 +1,93 @@
-# System Architecture
+# Architecture Systeme
 
-## Vue d'ensemble
+## Vue D'Ensemble
 
 ```mermaid
 flowchart TD
-    A["Utilisateur"] --> B["Web App"]
-    B --> C["Auth"]
-    B --> D["Database"]
-    B --> E["Chat IA"]
-    E --> F["Planner Engine"]
-    F --> G["Vendor Search Service"]
-    F --> H["Outreach Service"]
-    G --> I["Search APIs / Web"]
-    H --> J["Email / WhatsApp / CRM"]
-    J --> H
-    H --> D
-    F --> D
+    U["Utilisateur"] --> W["Next.js App Router"]
+    W --> A["Supabase Auth"]
+    W --> R["API routes Next.js"]
+    R --> DB["Supabase Postgres"]
+    R --> M["Mistral Chat API"]
+    R --> F["Firecrawl Search/Scrape"]
+    R --> N["Mistral Vendor Profile Agent"]
+    R --> E["Resend optionnel"]
+    W --> C["Client email via mailto"]
 ```
 
-## Parcours technique
+## Modules Principaux
 
-### 1. Authentification
+### App
 
-- inscription / connexion
-- creation du `user`
-- creation d'un `wedding_profile` initial
+- `app/page.tsx`: accueil public, routage email vers login/signup, Google OAuth
+- `app/onboarding/page.tsx`: collecte profil mariage
+- `app/chat/page.tsx`: interface conversationnelle Hada
+- `app/monmariage/page.tsx`: consultation et edition du profil
+- `app/vendors/page.tsx`: selection par categorie
+- `app/venues/page.tsx`: vue dediee lieux
+- `app/vendors/[slug]/page.tsx` et `app/venues/[slug]/page.tsx`: fiches detail
 
-### 2. Onboarding
+### API
 
-- formulaire multi-etapes
-- persistance progressive
-- score de completion du profil
+- `app/api/profile/route.ts`: profil mariage
+- `app/api/chat/route.ts`: conversation, intention, recherche, mise a jour profil
+- `app/api/vendors/route.ts`: lecture des candidats
+- `app/api/vendors/contact/route.ts`: brouillon de contact
+- `app/api/survey/route.ts`: survey et notification optionnelle
+- `app/api/auth/*`: helpers inscription, check email, logout
 
-### 3. Chat IA
+### Services Metier
 
-- chargement du resume du profil
-- injection du contexte dans le prompt systeme
-- memoire conversationnelle stockee
-- prise de decision par outils
+- `lib/server/hada.ts`: conversation, recherche, quota, cache, contact
+- `lib/server/firecrawl.ts`: recherche web, scraping, rotation de cles Firecrawl
+- `lib/server/vendor-profile-normalizer.ts`: normalisation Mistral des fiches prestataires
+- `lib/vendor-catalog.ts`: catalogue fallback et categories supportees
+- `lib/prompts.ts`: prompts planner et annonces recherche
 
-### 4. Qualification du besoin
+## Flux Chat Et Recherche
 
-L'agent detecte:
+1. Le client envoie un message a `POST /api/chat`.
+2. La route valide le bearer token Supabase.
+3. Hada charge le profil, la conversation et le contexte recent.
+4. Mistral determine l'intention: conseil, recherche, mise a jour profil, contact ou smalltalk.
+5. Si une recherche est prete, Hada cree un `vendor_request`.
+6. Hada tente d'abord Firecrawl en mode strict, puis en mode elargi.
+7. Si aucun resultat web exploitable n'est trouve et qu'aucune cle Firecrawl n'est configuree, le catalogue local peut servir de fallback.
+8. Les candidats sont normalises par le Vendor Profile Agent Mistral.
+9. Les candidats exploitables sont inseres dans `vendor_candidates`.
+10. Le chat retourne un CTA vers `/vendors`.
 
-- type de prestataire
-- champs deja connus via le profil
-- informations manquantes
-- niveau de confiance pour lancer la recherche
+La beta limite les recherches a 2 par fenetre de 48h par utilisateur.
 
-### 5. Recherche
+## Contact Prestataire
 
-Pipeline conseille:
+Le contact actuel est assiste, pas automatise:
 
-1. construire une requete structurée
-2. lancer une recherche web ou interroger une base de vendors
-3. normaliser les resultats
-4. scorer les prestataires
-5. retourner les 5 meilleurs avec justification
+1. Hada prepare un sujet et un corps d'email.
+2. L'app ouvre le client email de l'utilisateur avec `mailto:`.
+3. Le brouillon est journalise dans `outreach_threads` et `outreach_messages`.
 
-### 6. Outreach
+Il n'y a pas encore d'envoi email serveur vers les prestataires.
 
-- generation d'un message base sur le contexte utilisateur
-- validation utilisateur obligatoire
-- envoi vers le prestataire
-- stockage du thread
-- ingestion des reponses
+## Survey
 
-## Services metier recommandes
+Le popup survey s'ouvre apres sortie d'une fiche prestataire. Il collecte:
 
-### Planner Engine
+- note de recommandation
+- points apprecies
+- frustrations
+- intention de reutilisation
+- feature revee
+- sensibilite prix
+- modele de paiement prefere
 
-Responsable de:
+Les reponses sont stockees en base. Un email interne est envoye seulement si Resend est configure.
 
-- lire le profil utilisateur
-- comprendre l'intention
-- poser les bonnes questions
-- decider quand lancer les outils
+## Garde-Fous
 
-### Vendor Search
-
-Responsable de:
-
-- gerer les schemas de recherche par categorie
-- agregger les resultats externes
-- dedoublonner
-- scorer
-
-### Outreach
-
-Responsable de:
-
-- generer les messages
-- executer l'envoi
-- suivre les statuts
-- recuperer les reponses
-
-## Outils IA a exposer
-
-- `get_wedding_profile`
-- `update_wedding_profile`
-- `start_vendor_intake`
-- `search_vendors`
-- `save_vendor_candidates`
-- `draft_contact_message`
-- `send_contact_message`
-- `sync_vendor_replies`
-
-## Garde-fous IA
-
-- ne jamais contacter un prestataire sans validation explicite
-- ne pas inventer de disponibilites ou de prix
-- citer les donnees connues vs supposees
-- journaliser toutes les actions tools
-- prevoir des prompts differents pour qualification, recherche et outreach
+- Auth obligatoire sur les pages et routes privees.
+- Validation serveur du token Supabase avant acces aux donnees.
+- Pas de contact prestataire sans action explicite de l'utilisateur.
+- Pas d'invention volontaire de prix, disponibilites, avis ou coordonnees.
+- Fiches prestataires filtrees si elles sont trop generiques ou trop pauvres.
+- Fallback Google externe quand la recherche web n'aboutit pas.

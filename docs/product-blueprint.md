@@ -2,85 +2,114 @@
 
 ## Positionnement
 
-Hada doit agir comme un wedding planner numerique proactif, pas comme un simple chatbot. Elle doit:
+Hada est un wedding planner IA de poche. Elle doit aider un couple a avancer concretement, pas seulement discuter.
+
+Elle doit:
 
 - comprendre le contexte du mariage
-- guider l'utilisateur dans ses choix
-- recommander des prestataires pertinents
-- executer des actions concretes
-- suivre les echanges et les prochaines etapes
+- guider les decisions
+- rechercher des prestataires pertinents
+- expliquer pourquoi une recommandation est utile
+- preparer les prises de contact
+- garder une trace du profil, des recherches et des contacts
 
-## Personas MVP
+## Public Beta
 
 ### Couple autonome
 
 - veut gagner du temps
-- ne sait pas quels prestataires prioriser
-- a besoin d'un cadre
+- ne sait pas par quoi commencer
+- veut un cadre simple et rassurant
 
 ### Couple a distance
 
-- organise un mariage dans une autre ville ou un autre pays
-- a besoin d'aide sur la recherche et les prises de contact
+- organise dans une autre ville ou region
+- a besoin d'aide pour trouver et filtrer les prestataires
 
-### Couple premium
+### Couple premium potentiel
 
-- recherche des recommandations plus qualitatives et un haut niveau de personnalisation
+- recherche des recommandations plus qualitatives
+- peut payer si Hada fait gagner du temps ou reduit l'incertitude
 
-## Donnees essentielles a collecter a l'inscription
+## Parcours Actuel
 
-- prenoms des maries
-- email principal
-- telephone facultatif
-- date du mariage ou periode cible
-- ville / region / pays
-- nombre d'invites estime
-- budget global ou fourchette
-- style souhaite
-- contraintes fortes
-- type de ceremonie
-- langue preferee
+1. L'utilisateur arrive sur la page publique.
+2. Il s'inscrit par email ou via Google.
+3. Il confirme son email si inscription password.
+4. Il complete l'onboarding mariage.
+5. Il arrive dans le chat Hada.
+6. Il demande un conseil ou une recherche prestataire.
+7. Hada enregistre les candidats dans la selection.
+8. L'utilisateur consulte une fiche.
+9. Il prepare un email de contact.
+10. Hada collecte un retour survey apres la fiche.
 
-## Types de prestataires MVP
+## Donnees Collectees Aujourd'hui
 
-- lieu
-- photographe
-- traiteur
-- DJ / groupe
-- wedding planner humain
-- fleuriste
+- prenoms des deux maries
+- date ou absence de date fixe
+- lieux ou zones envisagees
+- nombre d'invites ou absence de liste precise
+- budget maximum ou absence de budget defini
 
-Commencer par `lieu` est le meilleur choix pour un premier cas d'usage car:
+Le chat peut ensuite enrichir:
 
-- c'est structurant pour tout le reste
-- les criteres sont assez clairs
-- la valeur percue est immediate
+- date
+- ville ou region
+- nombre d'invites
+- budget minimum ou maximum
 
-## User story coeur
+## Categories Prestataires
 
-En tant que futur marie,
-je veux expliquer mon projet de mariage a une IA,
-afin qu'elle trouve pour moi des prestataires adaptes et les contacte si je le souhaite.
+Categories codees:
 
-## Critere de succes du MVP
+- lieux
+- traiteurs
+- photographes
+- videastes
+- DJ
+- musiciens
+- decoration
+- robes
+- costumes
+- fleuristes
+- transport
 
-- onboarding complete > 60%
+Les lieux restent le cas d'usage le plus important pour la beta, car ils structurent le reste du mariage.
+
+## Critere De Succes Beta
+
+- onboarding complete sans friction majeure
 - au moins une recherche prestataire lancee par utilisateur actif
-- temps moyen pour obtenir 5 recommandations < 2 minutes
-- taux de clic ou d'interet sur au moins un prestataire > 30%
-- au moins un contact lance avec consentement explicite
+- 1 a 3 recommandations exploitables par recherche
+- ouverture d'au moins une fiche prestataire
+- au moins un brouillon de contact prepare
+- survey complete par une partie des utilisateurs
 
-## Risques produit
+## Risques Produit
 
-- recommandations trop generiques
-- manque de confiance dans les messages automatiques envoyes
-- donnees de recherche web trop pauvres ou non fiables
-- sur-promesse si l'IA se presente comme autonome sans garde-fous
+- resultats web trop pauvres ou trop generiques
+- photos manquantes sur les lieux
+- confiance insuffisante dans les donnees prestataires
+- confusion entre contact assiste et envoi automatique
+- quota recherche frustrant si mal explique
+- cout Mistral/Firecrawl si les recherches ne sont pas controlees
 
-## Garde-fous UX
+## Garde-Fous UX
 
-- toujours rappeler le contexte mariage avant la recommendation
-- afficher pourquoi chaque prestataire est recommande
-- demander validation avant contact
-- montrer le message qui sera envoye
-- conserver un historique des demandes et reponses
+- demander une validation avant toute modification importante du profil
+- ne pas pretendre avoir contacte un prestataire automatiquement
+- montrer les informations manquantes ou incertaines
+- privilegier les fiches riches et filtrer les resultats generiques
+- proposer un fallback externe quand Hada ne trouve pas assez de donnees
+- recueillir le feedback utilisateur apres consultation des fiches
+
+## Monétisation A Explorer
+
+Le survey teste trois familles:
+
+- abonnement mensuel
+- paiement unique jusqu'au jour J
+- systeme de credits pour fonctionnalites premium
+
+Les reponses pricing sont stockees dans `survey_responses.context_json.surveyAnswers`.

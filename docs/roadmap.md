@@ -1,49 +1,67 @@
 # Roadmap
 
-## Phase 1: fondations
+## Termine
 
-- choisir la stack
-- mettre en place auth
-- creer la base PostgreSQL
-- modeliser users, wedding_profiles, conversations, messages
-- creer l'onboarding mariage
+- stack Next.js, TypeScript, Tailwind
+- Supabase Auth email/password
+- confirmation email
+- Google OAuth
+- schema Supabase metier
+- onboarding mariage
+- page profil mariage editable
+- chat persistant
+- integration Mistral pour le planner
+- detection conseil vs recherche
+- mise a jour du profil depuis le chat
+- recherche prestataire Firecrawl
+- rotation de cles Firecrawl
+- fallback catalogue local
+- normalisation des fiches prestataires via Mistral
+- pages `/vendors`, `/venues` et fiches detail
+- brouillon de contact email via `mailto:`
+- journalisation des contacts
+- popup survey produit et pricing
+- redirection domaine canonique vers `hadawedding.fr`
 
-## Phase 2: chat IA contextualise
+## A Court Terme
 
-- afficher un resume dynamique du profil
-- connecter l'IA au profil
-- gerer l'historique des messages
-- creer la logique de qualification du besoin
+1. Tester le parcours complet en production:
+   - auth
+   - onboarding
+   - chat
+   - recherche lieu
+   - fiche lieu
+   - contact
+   - survey
+2. Verifier que le schema Supabase prod contient `survey_responses`.
+3. Configurer ou confirmer Firecrawl en prod.
+4. Configurer Resend si les notifications survey sont necessaires.
+5. Ajouter une configuration ESLint moderne si on veut restaurer `npm run lint`.
+6. Durcir les messages d'erreur utilisateur sur recherche sans resultat ou quota atteint.
 
-## Phase 3: recherche de prestataires
+## Priorites Produit
 
-- commencer par la categorie `lieu`
-- definir le schema de qualification
-- brancher une source de recherche
-- implementer le scoring et la short-list
+- ameliorer la qualite des fiches lieux, surtout photos, adresse, capacite et contact
+- clarifier le quota beta dans l'interface
+- rendre les categories non-lieux aussi convaincantes que les lieux
+- mieux expliquer les donnees incertaines dans les fiches
+- analyser les reponses pricing et feature revee
 
-## Phase 4: contact prestataires
+## Priorites Tech
 
-- generer un brouillon de message
-- demander validation utilisateur
-- envoyer l'email
-- stocker les statuts et reponses
+- ajouter des policies RLS basees sur `auth.uid()`
+- reduire l'usage de la service role key dans les routes serveur
+- ajouter des tests de routes critiques
+- ajouter une suite smoke test du parcours beta
+- isoler davantage la logique volumineuse de `app/api/chat/route.ts`
+- suivre cout et latence Mistral/Firecrawl
 
-## Phase 5: industrialisation
+## Plus Tard
 
-- multi-categories de prestataires
-- dashboard de suivi
+- envoi email serveur vers les prestataires
+- suivi des reponses prestataires
 - relances automatiques
-- gestion des disponibilites
-- analytics et monitoring
-
-## Priorite absolue
-
-Si vous voulez aller vite, commencez par ce chemin:
-
-1. auth
-2. onboarding mariage
-3. chat IA avec recap profil
-4. qualification `lieu`
-5. recherche + top 5
-6. contact email manuel assiste par IA
+- disponibilites et statuts par prestataire
+- tableau de bord de planning mariage
+- analytics produit
+- systeme premium selon les enseignements du survey

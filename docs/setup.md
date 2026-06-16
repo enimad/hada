@@ -1,149 +1,102 @@
-# Setup
+# Setup Local
 
-## 1. Creer la database
+Ce guide sert a reprendre Hada en local depuis ce depot.
 
-Je te conseille de faire la database directement sur Supabase.
+## Prerequis
 
-Pourquoi:
+- Node.js compatible avec Next.js 15
+- npm
+- un projet Supabase
+- une cle Mistral
 
-- Postgres gere bien les donnees structurees et relationnelles du produit
-- l'interface est simple pour demarrer vite
-- tu recuperes base SQL, auth, storage et webhooks dans le meme produit
-- la connexion avec Next.js est tres fluide
-- Supabase Auth peut devenir la source de verite pour les comptes utilisateurs
+Le depot Git pointe vers `git@github.com:enimad/hada.git`.
 
-### Ce qu'il faut creer
+## Installation
 
-1. Va sur [Supabase](https://supabase.com)
-2. Cree un nouveau projet
-3. Choisis une region proche de tes utilisateurs
-4. Dans `Project Settings > API`, recupere:
-   - `Project URL`
-   - `anon public key`
-   - `service_role secret key`
-5. Dans `SQL Editor`, colle le contenu de [supabase/schema.sql](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/supabase/schema.sql)
+```powershell
+npm install
+```
 
-Si tu vois l'erreur:
+Lancer le serveur local:
 
-`Could not find the table 'public.wedding_profiles' in the schema cache`
+```powershell
+npm run dev
+```
 
-cela signifie en pratique que le schema SQL de Hada n'a pas encore ete execute sur ton projet Supabase. Il faut donc ouvrir `SQL Editor` et lancer le contenu complet de [supabase/schema.sql](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/supabase/schema.sql).
+Le script `dev` utilise [scripts/dev-next.mjs](../scripts/dev-next.mjs) et demarre Next sur `localhost:3000` par defaut.
 
-Important:
+## Variables d'environnement
 
-- les identites utilisateur doivent idealement vivre dans `auth.users`
-- les tables metier de ce projet reference deja `auth.users(id)`
-- le `demo-user` present dans certaines pages est juste un placeholder de developpement
-
-### Mapping des variables
-
-- `NEXT_PUBLIC_SUPABASE_URL` = Project URL
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` = anon public key
-- `SUPABASE_SERVICE_ROLE_KEY` = service_role secret key
-
-## 2. Configurer Mistral
-
-Comme tu as deja une cle Mistral, il suffit d'ajouter:
-
-- `MISTRAL_API_KEY`
-- `MISTRAL_MODEL`
-
-Valeur conseillee pour commencer:
-
-- `MISTRAL_MODEL=mistral-large-latest`
-
-La route [app/api/chat/route.ts](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/app/api/chat/route.ts) appelle directement l'API Mistral via HTTP.
-
-## 2bis. Ou mettre les cles et secrets
-
-Tu dois creer un fichier `.env.local` a la racine du projet, au meme niveau que `package.json`.
-
-Le plus simple:
-
-1. dupliquer le fichier [.env.example](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/.env.example)
-2. renommer la copie en `.env.local`
-3. remplir les valeurs a droite du `=`
-
-Exemple:
+Dupliquer [.env.example](../.env.example) en `.env.local`, puis renseigner:
 
 ```env
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 
 NEXT_PUBLIC_SUPABASE_URL=https://ton-projet.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=ta_cle_publique_supabase
-SUPABASE_SERVICE_ROLE_KEY=ta_cle_service_role_supabase
+NEXT_PUBLIC_SUPABASE_ANON_KEY=ta_cle_anon
+SUPABASE_SERVICE_ROLE_KEY=ta_cle_service_role
 
 MISTRAL_API_KEY=ta_cle_mistral
 MISTRAL_MODEL=mistral-large-latest
 ```
 
-Important:
+Variables optionnelles:
 
-- `NEXT_PUBLIC_SUPABASE_URL` et `NEXT_PUBLIC_SUPABASE_ANON_KEY` sont utilises cote navigateur et cote app
-- `SUPABASE_SERVICE_ROLE_KEY` est secrete et ne doit jamais etre exposee publiquement
-- `MISTRAL_API_KEY` est secrete et ne doit jamais etre committee
-- `.env.local` est deja ignore par Git dans [.gitignore](/C:/Users/amine/Documents/Codex/2026-04-26/j-ai-un-projet-de-web-2/.gitignore)
+```env
+FIRECRAWL_API_KEY=
+FIRECRAWL_API_KEYS=
 
-Ou trouver les valeurs Supabase:
-
-1. ouvrir ton projet Supabase
-2. aller dans `Project Settings`
-3. ouvrir `API`
-4. copier:
-   - `Project URL`
-   - `anon public key`
-   - `service_role secret key`
-
-Ou trouver la valeur Mistral:
-
-- ta cle Mistral existante
-
-Ensuite, redemarre le serveur Next.js si `npm run dev` etait deja lance.
-
-## 3. Creer le repo GitHub
-
-La session GitHub disponible dans Codex est deja connectee, mais ce terminal n'a pas `git` installe.
-
-Fais d'abord:
-
-1. Cree un nouveau repository vide sur GitHub, par exemple `hada`
-2. Installe Git sur ta machine si besoin
-
-Ensuite, depuis ce dossier:
-
-```powershell
-git init
-git branch -M main
-git add .
-git commit -m "Initial scaffold for Hada"
-git remote add origin https://github.com/enimad/hada.git
-git push -u origin main
+RESEND_API_KEY=
+SURVEY_NOTIFY_TO=
+SURVEY_NOTIFY_FROM=
 ```
 
-## 4. Installer les dependances
+`FIRECRAWL_API_KEYS` accepte plusieurs cles separees par virgules, points-virgules ou retours ligne. Hada les utilise avec rotation automatique si une cle est limitee ou sans credit.
 
-Ce terminal n'a pas `npm`, `pnpm` ni `yarn`, donc je n'ai pas pu lancer l'installation ici.
+## Supabase
 
-Des que ton environnement local a un package manager:
+1. Creer ou ouvrir le projet Supabase Hada.
+2. Recuperer `Project URL`, `anon public key` et `service_role secret key`.
+3. Executer le contenu complet de [supabase/schema.sql](../supabase/schema.sql) dans `Supabase > SQL Editor`.
+4. Verifier que les tables principales existent:
+   - `wedding_profiles`
+   - `conversations`
+   - `messages`
+   - `vendor_requests`
+   - `vendor_candidates`
+   - `outreach_threads`
+   - `outreach_messages`
+   - `survey_responses`
 
-```powershell
-npm install
-npm run dev
+Si une route retourne une erreur du type `public.wedding_profiles` ou `survey_responses` introuvable, le schema SQL n'a probablement pas ete execute sur le projet Supabase utilise par `.env.local`.
+
+## Supabase Auth
+
+Configurer `Authentication > URL Configuration`:
+
+- Site URL local: `http://localhost:3000`
+- Redirect URLs locales:
+  - `http://localhost:3000/auth/continue`
+  - `http://localhost:3000/auth/callback`
+  - `http://localhost:3000/login?confirmed=1`
+
+Pour Google OAuth, le redirect URI Google doit pointer vers Supabase:
+
+```text
+https://<project-ref>.supabase.co/auth/v1/callback
 ```
 
-Ou avec pnpm:
+Hada redirige ensuite vers `/auth/continue`.
+
+## Verifications
 
 ```powershell
-pnpm install
-pnpm dev
+npm run typecheck
+npm run build
 ```
 
-## 5. Priorite de build
+`npm run lint` n'existe plus: aucun lint automatisable n'est configure aujourd'hui.
 
-Pour la toute premiere iteration:
+## Notes de securite
 
-1. brancher Supabase Auth
-2. remplacer le `demo-user` par le vrai `user.id`
-3. persister les conversations
-4. ajouter le moteur de qualification pour `lieu`
-5. brancher la recherche prestataire
+Les tables ont RLS activee, mais les routes serveur utilisent actuellement la `SUPABASE_SERVICE_ROLE_KEY` apres validation du bearer token Supabase. Avant une montee en charge, il faudra ajouter des policies RLS fines et limiter les operations service role au strict necessaire.

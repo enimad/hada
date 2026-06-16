@@ -1,71 +1,93 @@
 # Conversation Flows
 
-## Flux 1: onboarding puis chat
+Ce document decrit les flux conversationnels actuellement supportes par Hada.
 
-1. L'utilisateur cree son compte.
-2. L'app collecte les informations mariage essentielles.
-3. L'utilisateur arrive dans le chat.
-4. L'IA affiche un recapitulatif court:
-   "Vous preparez un mariage de 120 invites a Aix-en-Provence pour juin 2027 avec un style elegant et un budget estime entre 25k et 35k."
-5. L'IA demande:
-   "Quel prestataire voulez-vous trouver en premier ?"
+## 1. Entree Dans Le Chat
 
-## Flux 2: recherche de lieu
+1. L'utilisateur se connecte.
+2. `/auth/continue` verifie la session Supabase.
+3. Si aucun profil mariage n'existe, l'utilisateur va sur `/onboarding`.
+4. Sinon, il arrive sur `/chat`.
+5. `GET /api/chat` cree une conversation active si besoin.
+6. Hada affiche un recap court du profil mariage.
 
-### Exemple de logique
+## 2. Conseil Sans Recherche
 
-Utilisateur:
-"Je cherche un lieu."
+Exemple:
 
-IA:
-"Bien sur. J'ai deja votre zone, votre budget et votre nombre d'invites. Il me manque encore 3 points pour lancer une recherche pertinente:
+> Comment choisir entre un domaine et une salle de reception ?
 
-- voulez-vous un lieu interieur, exterieur ou mixte ?
-- souhaitez-vous pouvoir faire la ceremonie sur place ?
-- voulez-vous un hebergement sur place ?"
+Hada repond en conseil, sans lancer de recherche prestataire.
 
-Quand l'IA a assez d'informations:
+Objectif:
 
-1. elle reformule les criteres
-2. elle demande confirmation si un point est ambigu
-3. elle lance la recherche
-4. elle retourne 5 suggestions avec:
-   - nom
-   - localisation
-   - pourquoi ce lieu correspond
-   - gamme tarifaire si connue
-   - lien
+- eviter de consommer une recherche quand l'intention est seulement informative
+- garder la conversation utile et contextualisee
 
-## Flux 3: prise de contact
+## 3. Recherche Prestataire
 
-Utilisateur:
-"Contacte les 2 premiers pour un devis."
+Exemple:
 
-IA:
+> Je cherche un lieu pour 120 invites en Provence.
 
-1. resume ce qu'elle va envoyer
-2. montre le brouillon du message
-3. demande validation explicite
-4. envoie apres validation
-5. met a jour le statut dans le chat
+Hada verifie:
 
-## Structure de reponse recommandee dans le chat
+- categorie prestataire
+- zone
+- nombre d'invites
+- budget si utile, surtout pour les lieux
+- style ou contraintes si exprimes
 
-### Recap contexte
+Si l'information est insuffisante, Hada pose une question courte. Si l'information est suffisante, elle lance la recherche.
 
-- date / periode
-- lieu
-- invites
-- budget
-- style
+La recherche produit jusqu'a 3 candidats exploitables pour la beta. Les resultats sont stockes puis consultables dans `/vendors` ou `/venues`.
 
-### Questions manquantes
+## 4. Mise A Jour Du Profil Depuis Le Chat
 
-- uniquement les champs non renseignes
-- maximum 3 questions a la fois
+Si l'utilisateur donne une information qui modifie le profil, Hada peut:
 
-### Resultats
+- appliquer directement une mise a jour explicite
+- demander confirmation si l'information contredit le profil existant
 
-- top 5 ordonne
-- justification personnalisee
-- next step propose
+Exemple:
+
+> Finalement on sera 150.
+
+Hada demande confirmation avant de remplacer le nombre d'invites si le profil disait autre chose.
+
+## 5. Recherche Sans Resultat
+
+Si Firecrawl et les filtres de qualite ne produisent aucun candidat:
+
+1. Hada explique que la recherche n'a pas donne de resultat fiable.
+2. Elle propose une relance avec criteres elargis.
+3. Si la relance echoue encore, elle donne un lien de recherche Google externe.
+
+Le chat garde la trace de ces etapes dans les messages et metadonnees.
+
+## 6. Contact Prestataire
+
+Depuis une fiche prestataire:
+
+1. Hada prepare un brouillon d'email.
+2. L'utilisateur clique pour ouvrir son client mail.
+3. L'app journalise le brouillon dans Supabase.
+4. Hada ajoute une trace dans la conversation.
+
+L'envoi automatique serveur n'est pas encore actif.
+
+## 7. Survey Apres Fiche
+
+Quand l'utilisateur quitte une fiche prestataire, Hada ouvre un survey si aucun survey n'a deja ete complete dans la session.
+
+Le survey collecte:
+
+- recommandation de Hada
+- ce qui a plu
+- ce qui a frustre
+- intention de reutilisation
+- feature souhaitee
+- sensibilite prix
+- modele de paiement prefere
+
+Les reponses sont stockees dans `survey_responses`.

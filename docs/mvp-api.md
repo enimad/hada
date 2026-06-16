@@ -1,135 +1,192 @@
-# MVP API
+# API Actuelle
+
+Toutes les routes privees attendent un header:
+
+```http
+Authorization: Bearer <supabase_access_token>
+```
+
+La session est obtenue cote client avec `createSupabaseBrowserClient().auth.getSession()`.
 
 ## Auth
 
+### `POST /api/auth/check-email`
+
+Verifie si un compte Supabase existe deja pour un email.
+
+Payload:
+
+```json
+{ "email": "couple@example.com" }
+```
+
+Reponse:
+
+```json
+{ "exists": true }
+```
+
 ### `POST /api/auth/signup`
 
-Creer un compte utilisateur.
+Cree un compte email/password et demande la confirmation email.
 
-### `POST /api/auth/login`
+Payload:
 
-Ouvrir une session.
+```json
+{ "email": "couple@example.com", "password": "secret123" }
+```
 
-## Wedding profile
+Reponse:
 
-### `GET /api/wedding-profile`
+```json
+{ "ok": true, "requiresEmailConfirmation": true }
+```
 
-Recuperer le profil mariage courant.
+La connexion password et Google OAuth utilisent directement Supabase cote client.
 
-### `PUT /api/wedding-profile`
+### `POST /api/auth/logout`
 
-Mettre a jour le profil mariage.
+Supprime les cookies Supabase connus cote serveur.
 
-Payload exemple:
+## Profil Mariage
+
+### `GET /api/profile`
+
+Retourne le profil mariage de l'utilisateur connecte.
+
+### `PUT /api/profile`
+
+Cree ou met a jour le profil mariage.
+
+Payload attendu:
 
 ```json
 {
-  "partnerOneName": "Lea",
-  "partnerTwoName": "Hugo",
-  "weddingDate": "2027-06-19",
+  "partner_one_name": "Lea",
+  "partner_two_name": "Hugo",
+  "wedding_date": "2027-06-19",
+  "wedding_period_text": null,
   "city": "Aix-en-Provence",
-  "guestCount": 120,
-  "budgetMin": 25000,
-  "budgetMax": 35000,
-  "style": "Elegant provençal"
+  "region": null,
+  "country": "France",
+  "guest_count": 120,
+  "budget_min": null,
+  "budget_max": 35000,
+  "style": null,
+  "ceremony_type": null,
+  "notes": null
 }
 ```
 
 ## Chat
 
-### `GET /api/conversations/current`
+### `GET /api/chat`
 
-Retourner ou creer la conversation active.
-
-### `GET /api/conversations/:id/messages`
-
-Retourner l'historique.
-
-### `POST /api/chat/message`
-
-Envoyer un message utilisateur au planner IA.
-
-Payload exemple:
+Charge ou cree la conversation active, initialise les premiers messages Hada si besoin, puis retourne:
 
 ```json
 {
-  "conversationId": "conv_123",
-  "message": "Je cherche un lieu pour notre mariage."
+  "conversationId": "uuid",
+  "messages": [],
+  "profile": {}
 }
 ```
 
-Reponse exemple:
+### `POST /api/chat`
+
+Envoie un message utilisateur a Hada.
+
+Payload standard:
+
+```json
+{ "content": "Je cherche un lieu pour 120 invites en Provence." }
+```
+
+Payload pour relancer une recherche elargie:
+
+```json
+{ "action": "retry_search" }
+```
+
+La route peut:
+
+- repondre en conseil simple
+- demander une precision
+- proposer une mise a jour du profil
+- appliquer une mise a jour de profil confirmee
+- lancer une recherche prestataire
+- renvoyer un CTA vers `/vendors`
+- renvoyer un lien Google externe si aucun resultat exploitable n'est trouve
+
+## Prestataires
+
+### `GET /api/vendors`
+
+Liste les prestataires de l'utilisateur connecte.
+
+Query params:
+
+- `category`: optionnel, par exemple `venue`, `caterer`, `photographer`
+- `slug`: optionnel, pour recuperer une fiche precise
+
+Reponse:
 
 ```json
 {
-  "assistantMessage": "J'ai deja votre budget et votre nombre d'invites. Il me manque le type d'espace, la ceremonie sur place et l'hebergement.",
-  "toolActions": [],
-  "conversationState": {
-    "activeVendorCategory": "venue",
-    "missingFields": ["spaceType", "ceremonyOnSite", "lodgingNeeded"]
-  }
+  "categories": [
+    { "key": "venue", "label": "Lieux", "count": 3 }
+  ],
+  "candidates": []
 }
 ```
 
-## Vendor search
+### `POST /api/vendors/contact`
 
-### `POST /api/vendor-requests`
+Prepare un brouillon email pour un prestataire.
 
-Creer ou mettre a jour une demande prestataire.
-
-### `POST /api/vendor-requests/:id/search`
-
-Lancer la recherche.
-
-Reponse exemple:
+Payload:
 
 ```json
 {
-  "requestId": "vr_123",
-  "status": "completed",
-  "candidates": [
-    {
-      "name": "Domaine des Oliviers",
-      "city": "Aix-en-Provence",
-      "score": 92,
-      "summary": "Correspond au style elegant, accepte 120 invites et propose hebergement.",
-      "sourceUrl": "https://example.com"
-    }
-  ]
+  "candidateId": "uuid",
+  "preview": true
 }
 ```
 
-## Outreach
+Avec `preview: true`, la route retourne seulement `mailtoUrl` et `emailDraft`.
 
-### `POST /api/outreach/draft`
+Sans `preview`, elle cree aussi un `outreach_thread`, un `outreach_message` et ajoute un message dans la conversation.
 
-Generer un brouillon de message avant validation.
+## Survey
 
-### `POST /api/outreach/send`
+### `POST /api/survey`
 
-Envoyer le message apres consentement.
+Enregistre le retour utilisateur apres consultation d'une fiche prestataire.
 
-Payload exemple:
+Champs obligatoires:
 
-```json
-{
-  "vendorCandidateId": "vc_123",
-  "channel": "email",
-  "subject": "Demande de devis pour mariage en juin 2027",
-  "message": "Bonjour, nous recherchons un lieu pour 120 invites a Aix-en-Provence..."
-}
-```
+- `rating`
+- `appreciated`
+- `frustrated`
+- `reuseIntent`
+- `dreamFeature`
+- `tooExpensivePrice`
+- `expensiveButAcceptablePrice`
+- `goodDealPrice`
+- `tooCheapPrice`
+- `pricingModels`
 
-### `GET /api/outreach/threads`
+La route stocke le contexte complet dans `survey_responses.context_json` et tente d'envoyer un email via Resend si les variables sont configurees.
 
-Lister les fils de contact et leurs statuts.
+## Routes Auth Callback
 
-## Webhooks
+### `GET /auth/callback`
 
-### `POST /api/webhooks/email/inbound`
+Echange le code OAuth Supabase, puis redirige vers `/auth/continue`.
 
-Recevoir les reponses des prestataires.
+### `/auth/continue`
 
-### `POST /api/webhooks/email/status`
+Page client qui determine la prochaine destination:
 
-Recevoir les statuts d'envoi.
+- `/onboarding` si aucun profil mariage n'existe
+- `/chat` si le profil existe deja

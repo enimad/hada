@@ -1,12 +1,16 @@
 import type { NextConfig } from "next";
 
 const privatePaths = [
+  "/admin/:path*",
   "/api/:path*",
   "/auth/:path*",
+  "/budget",
   "/chat",
+  "/chat-v2",
   "/login/:path*",
   "/logout",
   "/messages/:path*",
+  "/mon-offre",
   "/monmariage",
   "/onboarding/:path*",
   "/signup/:path*",

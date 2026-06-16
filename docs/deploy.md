@@ -1,10 +1,10 @@
 # Deploy Hada
 
-Ce guide permet de mettre Hada en ligne proprement avec `Vercel + Supabase + Mistral`.
+Guide de deploiement pour `Vercel + Supabase + Mistral + Firecrawl`.
 
-## 1. Variables d'environnement
+## Variables Vercel
 
-Configurer ces variables dans Vercel :
+Variables requises:
 
 ```env
 NEXT_PUBLIC_APP_URL=https://ton-domaine-public.com
@@ -17,14 +17,33 @@ MISTRAL_API_KEY=ta_cle_mistral
 MISTRAL_MODEL=mistral-large-latest
 ```
 
-## 2. Base de donnees Supabase
+Variables optionnelles:
 
-Avant le premier deploiement :
+```env
+GOOGLE_API_KEY=
+GOOGLE_MODEL=gemini-2.5-flash
 
-1. Ouvrir `Supabase > SQL Editor`
-2. Executer le contenu de [supabase/schema.sql](C:\Users\amine\Documents\Codex\2026-04-26\j-ai-un-projet-de-web-2\supabase\schema.sql)
+FIRECRAWL_API_KEY=
+FIRECRAWL_API_KEYS=
 
-Tables MVP deja utilisees par Hada :
+RESEND_API_KEY=
+SURVEY_NOTIFY_TO=
+SURVEY_NOTIFY_FROM=
+
+MISTRAL_VENDOR_PROFILE_AGENT_ID=
+MISTRAL_VENDOR_PROFILE_AGENT_VERSION=
+
+DECAP_GITHUB_CLIENT_ID=
+DECAP_GITHUB_CLIENT_SECRET=
+```
+
+Si `FIRECRAWL_API_KEY` et `FIRECRAWL_API_KEYS` sont absentes, Hada utilise uniquement le catalogue local de fallback. Si Resend n'est pas configure, les surveys sont stockes en base mais aucun email de notification n'est envoye.
+
+## Supabase
+
+Executer [supabase/schema.sql](../supabase/schema.sql) dans `Supabase > SQL Editor`.
+
+Tables utilisees par l'app:
 
 - `wedding_profiles`
 - `conversations`
@@ -33,83 +52,80 @@ Tables MVP deja utilisees par Hada :
 - `vendor_candidates`
 - `outreach_threads`
 - `outreach_messages`
+- `survey_responses`
 
-## 3. Configuration Supabase Auth
+## Supabase Auth
 
-Dans `Supabase > Authentication > URL Configuration` :
+Dans `Supabase > Authentication > URL Configuration`:
 
 - `Site URL` :
   - local : `http://localhost:3000`
-  - prod : `https://ton-domaine-public.com`
+  - prod : `https://hadawedding.fr`
 - `Redirect URLs` :
   - `http://localhost:3000/auth/continue`
-  - `https://ton-domaine-public.com/auth/continue`
+  - `http://localhost:3000/auth/callback`
   - `http://localhost:3000/login?confirmed=1`
-  - `https://ton-domaine-public.com/login?confirmed=1`
+  - `https://hadawedding.fr/auth/continue`
+  - `https://hadawedding.fr/auth/callback`
+  - `https://hadawedding.fr/login?confirmed=1`
 
-## 4. Configuration Google OAuth
+Conserver aussi les URLs localhost si les tests locaux utilisent le meme projet Supabase.
 
-Dans `Supabase > Authentication > Providers > Google` :
+## Google OAuth
+
+Dans `Supabase > Authentication > Providers > Google`:
 
 - activer Google
-- renseigner `Client ID`
-- renseigner `Client Secret`
+- renseigner le `Client ID`
+- renseigner le `Client Secret`
 
-Dans `Google Cloud Console` :
+Dans Google Cloud Console, l'URI autorisee doit etre:
 
-- `Authorized redirect URI` :
-  - `https://<project-ref>.supabase.co/auth/v1/callback`
+```text
+https://<project-ref>.supabase.co/auth/v1/callback
+```
 
-Important :
+Le flux est: Google -> Supabase -> Hada `/auth/continue`.
 
-- le callback Google pointe vers Supabase
-- puis Supabase redirige vers Hada avec `redirectTo`
-- Hada utilise maintenant `/auth/continue` comme point d'entree fiable apres OAuth
+## Vercel
 
-## 5. Deploiement Vercel
+Option recommandee:
 
-Option recommandee :
+1. Connecter le repo GitHub `enimad/hada`.
+2. Ajouter les variables d'environnement.
+3. Deployer depuis `main`.
 
-1. connecter le repo GitHub `enimad/hada` a Vercel
-2. ajouter les variables d'environnement
-3. lancer le deploiement
-
-Build command :
+Build command:
 
 ```bash
 npm run build
 ```
 
-Start command :
+Start command:
 
 ```bash
 npm run start
 ```
 
-## 6. Verification post-deploiement
+## Verification Post-Deploiement
 
-Verifier ce parcours :
+Verifier ce parcours:
 
-1. accueil
-2. connexion Google
-3. inscription email + confirmation email
-4. onboarding
-5. ouverture du chat Hada
-6. demande de recherche de lieu
-7. affichage des lieux dans `/venues`
-8. ouverture d'une fiche lieu
-9. clic sur `Contacter`
-10. ouverture de la boite mail par defaut avec sujet + corps pre-remplis
+1. arriver sur `https://hadawedding.fr`
+2. tester Google OAuth
+3. tester inscription email + confirmation
+4. completer l'onboarding
+5. ouvrir le chat
+6. demander une recherche de lieu
+7. verifier l'apparition de candidats dans `/vendors` et `/venues`
+8. ouvrir une fiche lieu
+9. preparer un contact
+10. quitter la fiche et verifier le popup survey
+11. verifier `survey_responses` dans Supabase
 
-## 7. Perimetre MVP public
+## Points De Vigilance
 
-Le socle public est pret pour un lancement beta centre sur `lieux` :
-
-- auth email et Google
-- onboarding mariage
-- chat Hada persistant
-- recommandations dynamiques stockees en base
-- fiche prestataire
-- contact email + journalisation
-
-Les autres categories de prestataires peuvent ensuite etre etendues sur la meme architecture.
+- `middleware.ts` redirige `hada-wp.vercel.app` vers `https://hadawedding.fr`.
+- Les recherches beta sont limitees a 2 recherches par fenetre de 48h par utilisateur.
+- Les contacts prestataires ouvrent un `mailto:` et journalisent un brouillon; il n'y a pas encore d'envoi email serveur vers les prestataires.
+- Les policies RLS restent a renforcer avant un usage public large.

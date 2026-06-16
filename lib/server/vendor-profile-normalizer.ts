@@ -16,9 +16,9 @@ type MistralMessage = {
 };
 
 const NORMALIZER_VERSION = "vendor-profile-agent-v6";
-const NORMALIZER_TIMEOUT_MS = 10000;
-const VENDOR_PROFILE_AGENT_ID = process.env.MISTRAL_VENDOR_PROFILE_AGENT_ID ?? "ag_019df51d1f447452afaf38b74a71c7dd";
-const VENDOR_PROFILE_AGENT_VERSION = Number(process.env.MISTRAL_VENDOR_PROFILE_AGENT_VERSION ?? 6);
+const NORMALIZER_TIMEOUT_MS = 45000;
+const VENDOR_PROFILE_AGENT_ID = process.env.MISTRAL_VENDOR_PROFILE_AGENT_ID?.trim() || "ag_019df51d1f447452afaf38b74a71c7dd";
+const VENDOR_PROFILE_AGENT_VERSION = Number(process.env.MISTRAL_VENDOR_PROFILE_AGENT_VERSION?.trim() || 6);
 
 const NORMALIZER_SYSTEM_PROMPT = `Tu es un expert senior en création de fiches prestataires mariage pour Hada.
 
