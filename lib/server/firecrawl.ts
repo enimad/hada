@@ -1,5 +1,6 @@
 import Firecrawl from "@mendable/firecrawl-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { isBlockedWeddingDirectoryHost, isBlockedWeddingDirectoryUrl } from "@/lib/blocked-vendor-sources";
 import { env } from "@/lib/env";
 import { collectDisplayImageUrls, isLikelyImageUrl } from "@/lib/image-url";
 import type { VendorCategory, VendorReviewSnippet, WeddingProfile } from "@/lib/types";
@@ -103,13 +104,16 @@ const EXTRACTION_SCHEMA = {
   }
 } as const;
 
+const FIRECRAWL_OPERATION_TIMEOUT_MS = 9000;
+const FIRECRAWL_SEARCH_LIMIT = 6;
+const FIRECRAWL_SCRAPE_LIMIT = 3;
+
 export async function searchVendorsWithFirecrawl(
   supabase: SupabaseClient,
   input: {
     userId: string;
     category: VendorCategory;
     query: string;
-    location?: string | null;
     profile: Partial<WeddingProfile> | null;
     mode?: "strict" | "expanded";
   }
@@ -125,14 +129,14 @@ export async function searchVendorsWithFirecrawl(
     // Clés API Firecrawl à renseigner dans .env.local via FIRECRAWL_API_KEY ou FIRECRAWL_API_KEYS.
     const existingDomains = await loadExistingDomains(supabase, input.userId);
     const mode = input.mode ?? "strict";
-    const searchQuery = buildFirecrawlQuery(input.category, input.query, input.profile, mode, input.location);
+    const searchQuery = buildFirecrawlQuery(input.category, input.query, input.profile, mode);
 
     const searchResults = await withFirecrawlKeyRotation(apiKeys, disabledKeyIndexes, "search", (firecrawl) =>
       firecrawl.search(searchQuery, {
         sources: ["web"],
-        limit: 10,
+        limit: FIRECRAWL_SEARCH_LIMIT,
         lang: "fr",
-        timeout: 12000,
+        timeout: FIRECRAWL_OPERATION_TIMEOUT_MS,
         scrapeOptions: {
           formats: ["markdown"],
           onlyMainContent: true,
@@ -149,8 +153,9 @@ export async function searchVendorsWithFirecrawl(
         markdown: item.markdown ?? undefined
       }))
       .filter((item) => item.url)
+      .filter((item) => !isBlockedWeddingDirectoryUrl(item.url))
       .filter((item) => passesPreScrapeFilters(item, input.category, existingDomains, mode))
-      .slice(0, 5);
+      .slice(0, FIRECRAWL_SCRAPE_LIMIT);
 
     const results = await Promise.all(
       selectedResults.map((result) => scrapeVendorResult(apiKeys, disabledKeyIndexes, result, input.category, input.query, input.profile, mode))
@@ -200,7 +205,7 @@ async function scrapeVendorResult(
         ],
         onlyMainContent: true,
         fastMode: true,
-        timeout: 12000
+        timeout: FIRECRAWL_OPERATION_TIMEOUT_MS
       } as never)
     );
 
@@ -311,32 +316,20 @@ function unwrapFirecrawlDocument(raw: unknown): Record<string, unknown> {
   return document;
 }
 
-function buildFirecrawlQuery(
-  category: VendorCategory,
-  query: string,
-  profile: Partial<WeddingProfile> | null,
-  mode: "strict" | "expanded",
-  explicitLocation?: string | null
-) {
-  const location = cleanLocation(explicitLocation) ?? getPrimarySearchLocation(profile);
+function buildFirecrawlQuery(category: VendorCategory, query: string, profile: Partial<WeddingProfile> | null, mode: "strict" | "expanded") {
+  const location = getPrimarySearchLocation(profile);
   const baseQuery = buildCategorySearchCore(category, location);
   const modifiers = cleanSearchModifiers(query, category, location);
-  const directoryHint = mode === "expanded" ? "mariages.net zankyou bridebook" : "";
-  return compactFirecrawlQuery(`${baseQuery} ${modifiers} ${directoryHint}`, mode === "expanded" ? 12 : 10).slice(0, 160);
-}
-
-function cleanLocation(value: string | null | undefined) {
-  if (!value) return null;
-  const cleaned = value
-    .split(",")[0]
-    .replace(/\([^)]*\)/g, "")
-    .trim();
-  return cleaned || null;
+  return compactFirecrawlQuery(`${baseQuery} ${modifiers} site officiel`, mode === "expanded" ? 12 : 10).slice(0, 160);
 }
 
 function getPrimarySearchLocation(profile: Partial<WeddingProfile> | null) {
   const raw = profile?.city ?? profile?.region ?? profile?.country ?? "France";
-  return cleanLocation(raw) ?? raw;
+  const withoutContext = raw
+    .split(",")[0]
+    .replace(/\([^)]*\)/g, "")
+    .trim();
+  return withoutContext || raw;
 }
 
 function buildCategorySearchCore(category: VendorCategory, location: string) {
@@ -480,8 +473,9 @@ function passesPreScrapeFilters(
   const lowerUrl = item.url.toLowerCase();
   const lowerTarget = normalize(`${item.url} ${item.title ?? ""} ${item.description ?? ""}`);
 
+  if (isBlockedWeddingDirectoryHost(domain)) return false;
   if (isSocialDomain(domain)) return false;
-  if (mode === "strict" && isGenericDirectoryDomain(domain) && !isUsefulWeddingDirectoryDomain(domain)) return false;
+  if (mode === "strict" && isGenericDirectoryDomain(domain)) return false;
   if (/\/(blog|article|guide|conseil|inspiration|tendance|actualite)\//i.test(lowerUrl)) return false;
   if (existingDomains.has(domain)) return false;
   if (mode === "strict" && !categoryKeywords(category).some((keyword) => lowerTarget.includes(normalize(keyword)))) return false;
@@ -490,13 +484,9 @@ function passesPreScrapeFilters(
 }
 
 function isGenericDirectoryDomain(domain: string) {
-  return /(^|\.)mariages\.net$|(^|\.)mariage\.com$|(^|\.)zankyou\.fr$|pages-jaunes\.fr|(^|\.)yelp\.fr$|(^|\.)tripadvisor\.fr$|leboncoin\.fr|(^|\.)annuaire\.|(^|\.)directory\.|(^|\.)list\./.test(
+  return /(^|\.)mariages\.net$|(^|\.)mariage\.fr$|(^|\.)mariage\.com$|(^|\.)zankyou\.fr$|pages-jaunes\.fr|(^|\.)yelp\.fr$|(^|\.)tripadvisor\.fr$|leboncoin\.fr|(^|\.)annuaire\.|(^|\.)directory\.|(^|\.)list\./.test(
     domain
   );
-}
-
-function isUsefulWeddingDirectoryDomain(domain: string) {
-  return /(^|\.)mariages\.net$|(^|\.)mariage\.com$|(^|\.)zankyou\.fr$|(^|\.)bridebook\.com$/.test(domain);
 }
 
 function isSocialDomain(domain: string) {
@@ -507,6 +497,7 @@ function isLikelyOfficialProviderPage(item: SearchResultLike, category: VendorCa
   const domain = extractDomain(item.url);
   const target = normalize(`${item.url} ${item.title ?? ""} ${item.description ?? ""}`);
 
+  if (isBlockedWeddingDirectoryHost(domain)) return false;
   if (isSocialDomain(domain)) return false;
   if (/\/(blog|article|guide|conseil|inspiration|tendance|actualite)\//i.test(item.url)) return false;
   if (!target.includes("mariage") && !target.includes("wedding") && !target.includes(categoryToShortLabel(category))) return false;
@@ -522,6 +513,7 @@ function buildSearchResultCandidate(
   profile: Partial<WeddingProfile> | null
 ): FirecrawlVendorResult | null {
   if (!isLikelyOfficialProviderPage(searchResult, category)) return null;
+  if (isBlockedWeddingDirectoryUrl(searchResult.url)) return null;
 
   const name = extractProviderName(searchResult);
   if (!name) return null;
@@ -529,6 +521,7 @@ function buildSearchResultCandidate(
 
   const website = sanitizeWebsite(searchResult.url, searchResult.url);
   if (!website) return null;
+  if (isBlockedWeddingDirectoryUrl(website)) return null;
 
   const city = extractLocationFromSearchResult(searchResult, profile);
   const richText = [searchResult.markdown, searchResult.description, searchResult.title].filter(Boolean).join("\n");
@@ -724,6 +717,7 @@ function toVendorResult(
   const capacity = readText(data, ["capacite_invites"]);
   const availability = readText(data, ["disponibilite"]);
   const sourceLabel = extractDomain(website ?? searchResult.url);
+  if (isBlockedWeddingDirectoryUrl(searchResult.url) || isBlockedWeddingDirectoryUrl(website)) return null;
   const images = readImages(data, website ?? searchResult.url, markdown);
   const image = images[0] ?? null;
   const reviewSnippets = readReviewSnippets(data);
@@ -951,8 +945,9 @@ function readStringArray(source: Record<string, unknown>, keys: string[]) {
 }
 
 function sanitizeWebsite(website: string | null, fallbackUrl: string) {
-  if (website && !isExampleDomain(website)) return website;
-  return isExampleDomain(fallbackUrl) ? null : fallbackUrl;
+  if (website && !isExampleDomain(website) && !isBlockedWeddingDirectoryUrl(website)) return website;
+  if (isExampleDomain(fallbackUrl) || isBlockedWeddingDirectoryUrl(fallbackUrl)) return null;
+  return fallbackUrl;
 }
 
 function isExampleDomain(url: string | null) {

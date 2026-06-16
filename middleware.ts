@@ -1,22 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const PROTECTED_PATHS = ["/chat", "/monmariage", "/vendors", "/venues", "/messages", "/onboarding"];
-const LEGACY_PRODUCTION_HOSTS = new Set(["hada-wp.vercel.app"]);
-const CANONICAL_PRODUCTION_ORIGIN = "https://hadawedding.fr";
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const host = request.headers.get("host")?.toLowerCase().split(":")[0];
-
-  if (host && LEGACY_PRODUCTION_HOSTS.has(host)) {
-    return NextResponse.redirect(new URL(`${request.nextUrl.pathname}${request.nextUrl.search}`, CANONICAL_PRODUCTION_ORIGIN), 308);
-  }
 
   if (pathname === "/") {
-    if (request.nextUrl.searchParams.has("code")) {
-      return NextResponse.next();
-    }
-
     const response = NextResponse.next();
     request.cookies
       .getAll()
@@ -45,5 +34,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/:path*"]
+  matcher: ["/", "/chat/:path*", "/monmariage/:path*", "/vendors/:path*", "/venues/:path*", "/messages/:path*", "/onboarding/:path*"]
 };

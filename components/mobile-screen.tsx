@@ -15,8 +15,8 @@ export function MobileScreen({
   footer?: boolean;
 }) {
   return (
-    <main className="min-h-screen bg-[var(--hada-cream)]">
-      <div className={`mx-auto flex min-h-screen w-full max-w-[520px] flex-col px-7 pb-8 pt-6 sm:px-10 ${className}`}>
+    <main className="min-h-[100svh] bg-[var(--hada-cream)]">
+      <div className={`mx-auto flex min-h-[100svh] w-full max-w-[520px] flex-col px-7 pb-8 pt-6 sm:px-10 ${className}`}>
         {header}
         {children}
         {footer ? <BottomHint /> : null}
@@ -115,7 +115,8 @@ export function LineInput({
   type = "text",
   rightSlot,
   inputClassName = "",
-  inputMode
+  inputMode,
+  compact = false
 }: {
   label?: string;
   icon?: ReactNode;
@@ -126,11 +127,20 @@ export function LineInput({
   rightSlot?: ReactNode;
   inputClassName?: string;
   inputMode?: InputHTMLAttributes<HTMLInputElement>["inputMode"];
+  compact?: boolean;
 }) {
   return (
     <label className="block">
-      {label ? <span className="mb-4 block text-[18px] font-medium tracking-[-0.03em] text-[var(--hada-navy)] sm:mb-5 sm:text-[20px]">{label}</span> : null}
-      <div className="flex items-center gap-3 border-b-2 border-[var(--hada-line-strong)] pb-3 sm:gap-4 sm:pb-4">
+      {label ? (
+        <span
+          className={`block font-medium tracking-[-0.03em] text-[var(--hada-navy)] ${
+            compact ? "mb-2 text-[clamp(15px,2svh,18px)]" : "mb-4 text-[18px] sm:mb-5 sm:text-[20px]"
+          }`}
+        >
+          {label}
+        </span>
+      ) : null}
+      <div className={`flex items-center gap-3 border-b-2 border-[var(--hada-line-strong)] sm:gap-4 ${compact ? "pb-2" : "pb-3 sm:pb-4"}`}>
         {icon ? <span className="flex h-9 w-9 shrink-0 items-center justify-center text-[#99908c] sm:h-10 sm:w-10">{icon}</span> : null}
         <input
           type={type}
@@ -138,7 +148,9 @@ export function LineInput({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
-          className={`min-w-0 flex-1 bg-transparent text-[18px] font-normal tracking-[-0.04em] text-[var(--hada-navy)] outline-none placeholder:text-[#8f8884] sm:text-[22px] ${inputClassName}`}
+          className={`min-w-0 flex-1 bg-transparent font-normal tracking-[-0.04em] text-[var(--hada-navy)] outline-none placeholder:text-[#8f8884] ${
+            compact ? "text-[clamp(17px,2.4svh,20px)]" : "text-[18px] sm:text-[22px]"
+          } ${inputClassName}`}
         />
         {rightSlot}
       </div>
@@ -146,9 +158,9 @@ export function LineInput({
   );
 }
 
-export function DividerOr() {
+export function DividerOr({ className = "" }: { className?: string }) {
   return (
-    <div className="my-8 flex items-center gap-5 text-[18px] font-semibold tracking-[-0.04em] text-[var(--hada-navy)] sm:my-10 sm:text-[20px]">
+    <div className={`my-8 flex items-center gap-5 text-[18px] font-semibold tracking-[-0.04em] text-[var(--hada-navy)] sm:my-10 sm:text-[20px] ${className}`}>
       <span className="h-px flex-1 bg-[#e7ddd8]" />
       <span>ou</span>
       <span className="h-px flex-1 bg-[#e7ddd8]" />

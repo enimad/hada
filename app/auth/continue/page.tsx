@@ -20,7 +20,7 @@ export default function AuthContinuePage() {
         const { error } = await supabase.auth.exchangeCodeForSession(code);
 
         if (error) {
-          router.replace("/");
+          router.replace("/signup");
           return;
         }
 
@@ -32,7 +32,7 @@ export default function AuthContinuePage() {
       } = await supabase.auth.getSession();
 
       if (!session) {
-        router.replace("/");
+        router.replace("/signup");
         return;
       }
 
@@ -55,28 +55,28 @@ export default function AuthContinuePage() {
   }, [router]);
 
   return (
-    <MobileScreen className="pt-2">
-      <div className="pt-24 text-center">
-        <div className="mx-auto inline-flex items-center gap-3 rounded-full bg-[var(--hada-gold)] px-8 py-4 text-[18px] font-semibold uppercase tracking-[0.12em] text-[#774117]">
+    <MobileScreen className="h-[100svh] min-h-0 justify-center overflow-hidden pb-[clamp(16px,3svh,32px)] pt-[clamp(16px,3svh,32px)]">
+      <div className="flex w-full flex-col items-center text-center">
+        <div className="mx-auto inline-flex items-center gap-2 rounded-full bg-[var(--hada-gold)] px-[clamp(16px,4vw,28px)] py-[clamp(10px,1.8svh,14px)] text-[clamp(12px,1.8svh,15px)] font-semibold uppercase tracking-[0.12em] text-[#774117]">
           <span className="hada-pulse">+</span>
           <span>Hada est à l'œuvre</span>
         </div>
 
-        <p className="mx-auto mt-20 max-w-[340px] text-[40px] font-medium leading-[1.22] tracking-[-0.05em] text-[var(--hada-navy)] sm:text-[44px]">
+        <p className="mx-auto mt-[clamp(22px,4svh,42px)] max-w-[340px] text-[clamp(25px,4.4svh,38px)] font-medium leading-[1.16] tracking-[-0.05em] text-[var(--hada-navy)]">
           Je retrouve votre compte et je vous amène au bon endroit...
         </p>
 
-        <div className="mt-20 hada-float">
-          <HadaPortrait variant="full" className="w-[300px]" />
+        <div className="mt-[clamp(22px,4svh,42px)] hada-float">
+          <HadaPortrait variant="full" className="!w-[clamp(150px,25svh,230px)] !max-w-[60vw]" />
         </div>
 
-        <div className="mt-10 flex items-center justify-center gap-2">
-          <span className="hada-pulse h-2.5 w-2.5 rounded-full bg-[var(--hada-coral)]" />
-          <span className="hada-pulse h-2.5 w-2.5 rounded-full bg-[var(--hada-coral)]" style={{ animationDelay: "0.2s" }} />
-          <span className="hada-pulse h-2.5 w-2.5 rounded-full bg-[var(--hada-coral)]" style={{ animationDelay: "0.4s" }} />
+        <div className="mt-[clamp(18px,3svh,30px)] flex items-center justify-center gap-2">
+          <span className="hada-pulse h-2 w-2 rounded-full bg-[var(--hada-coral)]" />
+          <span className="hada-pulse h-2 w-2 rounded-full bg-[var(--hada-coral)]" style={{ animationDelay: "0.2s" }} />
+          <span className="hada-pulse h-2 w-2 rounded-full bg-[var(--hada-coral)]" style={{ animationDelay: "0.4s" }} />
         </div>
 
-        <div className="mt-8 h-2.5 w-full overflow-hidden rounded-full bg-[#e5dfda] hada-progress">
+        <div className="mt-[clamp(16px,2.6svh,26px)] h-2 w-full max-w-[380px] overflow-hidden rounded-full bg-[#e5dfda] hada-progress">
           <div className="h-full w-full rounded-full bg-[linear-gradient(90deg,#fb6974,#ffad33)] opacity-80" />
         </div>
       </div>

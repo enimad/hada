@@ -5,9 +5,11 @@ import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-const SURVEY_DONE_KEY = "hada:survey:completed";
+const SURVEY_DONE_KEY_PREFIX = "hada:survey:completed";
+const LEGACY_SURVEY_DONE_KEY = "hada:survey:completed";
 const SURVEY_PENDING_KEY = "hada:survey:pending";
 const SURVEY_PENDING_EVENT = "hada:survey:pending-created";
+const SURVEY_COMPLETED_EVENT = "hada:survey:completed";
 
 type PendingSurvey = {
   sourcePath: string;
@@ -23,12 +25,7 @@ type SurveyAnswers = {
   appreciated: string;
   frustrated: string;
   reuseIntent: string;
-  tooExpensivePrice: string;
-  expensiveButAcceptablePrice: string;
-  goodDealPrice: string;
-  tooCheapPrice: string;
   dreamFeature: string;
-  pricingModels: string[];
 };
 
 type ProfileResponse = {
@@ -38,13 +35,24 @@ type ProfileResponse = {
   } | null;
 };
 
+type SurveyStatusResponse = {
+  completed?: boolean;
+};
+
+let surveyCompletedInMemory = false;
+let surveyCompletionChecked = false;
+let surveyCompletionSyncPromise: Promise<boolean> | null = null;
+let surveyCompletionUserId: string | null = null;
+
 export function SurveyExitGuard({ sourceVendorSlug }: SurveyExitGuardProps) {
   const pathname = usePathname();
 
   useEffect(() => {
+    syncSurveyCompletionStatus();
+
     function onClick(event: MouseEvent) {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      if (sessionStorage.getItem(SURVEY_DONE_KEY)) return;
+      if (hasCompletedSurvey()) return;
 
       const target = event.target as HTMLElement | null;
       const link = target?.closest("a[href]") as HTMLAnchorElement | null;
@@ -77,40 +85,55 @@ export function SurveyModalHost() {
     appreciated: "",
     frustrated: "",
     reuseIntent: "",
-    tooExpensivePrice: "",
-    expensiveButAcceptablePrice: "",
-    goodDealPrice: "",
-    tooCheapPrice: "",
-    dreamFeature: "",
-    pricingModels: []
+    dreamFeature: ""
   });
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hasCompletedSurveyState, setHasCompletedSurveyState] = useState(false);
 
   const currentQuestionIsValid = useMemo(() => {
     if (step === 1) return answers.rating !== null;
     if (step === 2) return answers.appreciated.trim().length > 0;
     if (step === 3) return answers.frustrated.trim().length > 0;
     if (step === 4) return answers.reuseIntent.trim().length > 0;
-    if (step === 5) return answers.dreamFeature.trim().length > 0;
-    if (step === 6) return answers.tooExpensivePrice.trim().length > 0;
-    if (step === 7) return answers.expensiveButAcceptablePrice.trim().length > 0;
-    if (step === 8) return answers.goodDealPrice.trim().length > 0;
-    if (step === 9) return answers.tooCheapPrice.trim().length > 0;
-    if (step === 10) return answers.pricingModels.length > 0;
     return true;
   }, [answers, step]);
 
   useEffect(() => {
+    let isMounted = true;
+
+    async function checkCompletion() {
+      const completed = await syncSurveyCompletionStatus();
+      if (!isMounted) return;
+      setHasCompletedSurveyState(completed);
+      if (completed) {
+        sessionStorage.removeItem(SURVEY_PENDING_KEY);
+        setPendingSurvey(null);
+      } else {
+        openPendingSurvey();
+      }
+    }
+
     function openPendingSurvey() {
+      if (hasCompletedSurvey()) {
+        sessionStorage.removeItem(SURVEY_PENDING_KEY);
+        setPendingSurvey(null);
+        return;
+      }
+
       const currentPathname = typeof window === "undefined" ? pathname : window.location.pathname;
       const nextPendingSurvey = readPendingSurvey(currentPathname);
       if (nextPendingSurvey) setPendingSurvey(nextPendingSurvey);
     }
 
-    openPendingSurvey();
+    void checkCompletion();
     window.addEventListener(SURVEY_PENDING_EVENT, openPendingSurvey);
-    return () => window.removeEventListener(SURVEY_PENDING_EVENT, openPendingSurvey);
+    window.addEventListener(SURVEY_COMPLETED_EVENT, openPendingSurvey);
+    return () => {
+      isMounted = false;
+      window.removeEventListener(SURVEY_PENDING_EVENT, openPendingSurvey);
+      window.removeEventListener(SURVEY_COMPLETED_EVENT, openPendingSurvey);
+    };
   }, [pathname]);
 
   useEffect(() => {
@@ -149,7 +172,7 @@ export function SurveyModalHost() {
     };
   }, [pendingSurvey]);
 
-  if (!pendingSurvey) return null;
+  if (!pendingSurvey || (hasCompletedSurveyState && step !== 6)) return null;
 
   function closeThanks() {
     setPendingSurvey(null);
@@ -162,16 +185,13 @@ export function SurveyModalHost() {
       setError("Une petite réponse ici, et on continue.");
       return;
     }
-    setStep((current) => Math.min(current + 1, 11));
+    setStep((current) => Math.min(current + 1, 5));
   }
 
   async function submitSurvey() {
-    setError("");
-    if (!currentQuestionIsValid) {
-      setError("Une petite rÃ©ponse ici, et on continue.");
-      return;
-    }
+    if (step !== 5) return;
 
+    setError("");
     setIsSubmitting(true);
     const currentSurvey = pendingSurvey;
     if (!currentSurvey) {
@@ -203,24 +223,18 @@ export function SurveyModalHost() {
           appreciated: answers.appreciated,
           frustrated: answers.frustrated,
           reuseIntent: answers.reuseIntent,
-          tooExpensivePrice: answers.tooExpensivePrice,
-          expensiveButAcceptablePrice: answers.expensiveButAcceptablePrice,
-          goodDealPrice: answers.goodDealPrice,
-          tooCheapPrice: answers.tooCheapPrice,
-          dreamFeature: answers.dreamFeature,
-          pricingModels: answers.pricingModels
+          dreamFeature: answers.dreamFeature
         })
       });
 
-      if (!response.ok) {
-        const result = (await response.json()) as { error?: string };
+      const result = (await response.json()) as { error?: string; emailSent?: boolean };
+      if (!response.ok || !result.emailSent) {
         setError(result.error ?? "Impossible d'envoyer le survey pour le moment.");
         return;
       }
 
-      sessionStorage.setItem(SURVEY_DONE_KEY, "1");
-      sessionStorage.removeItem(SURVEY_PENDING_KEY);
-      setStep(12);
+      markSurveyCompleted(session.user.id);
+      setStep(6);
     } finally {
       setIsSubmitting(false);
     }
@@ -234,7 +248,7 @@ export function SurveyModalHost() {
         className="w-full max-w-[560px] overflow-hidden rounded-[34px] border border-white/70 bg-[#fffaf7] shadow-[0_30px_80px_rgba(43,33,79,0.25)]"
       >
         <div className="relative p-6 sm:p-8">
-          {step === 12 ? (
+          {step === 6 ? (
             <button
               type="button"
               onClick={closeThanks}
@@ -246,7 +260,7 @@ export function SurveyModalHost() {
           ) : null}
 
           <div className="mb-6 h-1.5 overflow-hidden rounded-full bg-[#f4e7e2]">
-            <div className="h-full rounded-full bg-[var(--hada-coral)] transition-all" style={{ width: `${((step + 1) / 13) * 100}%` }} />
+            <div className="h-full rounded-full bg-[var(--hada-coral)] transition-all" style={{ width: `${((step + 1) / 7) * 100}%` }} />
           </div>
 
           {step === 0 ? <IntroStep /> : null}
@@ -273,47 +287,13 @@ export function SurveyModalHost() {
             />
           ) : null}
           {step === 5 ? <DreamFeatureStep value={answers.dreamFeature} onChange={(dreamFeature) => setAnswers((current) => ({ ...current, dreamFeature }))} /> : null}
-          {step === 6 ? (
-            <TextStep
-              label="À partir de quel prix est-ce trop cher ?"
-              value={answers.tooExpensivePrice}
-              onChange={(tooExpensivePrice) => setAnswers((current) => ({ ...current, tooExpensivePrice }))}
-            />
-          ) : null}
-          {step === 7 ? (
-            <TextStep
-              label="À partir de quel prix est-ce cher, mais encore acceptable ?"
-              value={answers.expensiveButAcceptablePrice}
-              onChange={(expensiveButAcceptablePrice) => setAnswers((current) => ({ ...current, expensiveButAcceptablePrice }))}
-            />
-          ) : null}
-          {step === 8 ? (
-            <TextStep
-              label="En dessous de quel prix est-ce une bonne affaire ?"
-              value={answers.goodDealPrice}
-              onChange={(goodDealPrice) => setAnswers((current) => ({ ...current, goodDealPrice }))}
-            />
-          ) : null}
-          {step === 9 ? (
-            <TextStep
-              label="En dessous de quel prix est-ce trop bon marché ?"
-              value={answers.tooCheapPrice}
-              onChange={(tooCheapPrice) => setAnswers((current) => ({ ...current, tooCheapPrice }))}
-            />
-          ) : null}
-          {step === 10 ? (
-            <PricingModelStep
-              value={answers.pricingModels}
-              onChange={(pricingModels) => setAnswers((current) => ({ ...current, pricingModels }))}
-            />
-          ) : null}
-          {step === 12 ? <ThanksStep coupleNames={coupleNames} /> : null}
+          {step === 6 ? <ThanksStep coupleNames={coupleNames} /> : null}
 
           {error ? <p className="mt-4 rounded-2xl bg-[#fff0f1] px-4 py-3 text-[14px] font-medium text-[var(--hada-coral)]">{error}</p> : null}
 
-          {step < 12 ? (
+          {step < 6 ? (
             <div className="mt-7 flex justify-end">
-              {step < 10 ? (
+              {step < 5 ? (
                 <button
                   type="button"
                   onClick={handleNext}
@@ -324,11 +304,11 @@ export function SurveyModalHost() {
               ) : (
                 <button
                   type="button"
-                  onClick={step === 10 ? submitSurvey : handleNext}
+                  onClick={submitSurvey}
                   disabled={isSubmitting}
                   className="h-12 w-full rounded-full bg-[var(--hada-coral)] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_14px_30px_rgba(255,96,116,0.25)] disabled:opacity-60 sm:w-auto"
                 >
-                  {step === 10 ? (isSubmitting ? "Envoi..." : "Envoyer mon retour") : "Continuer"}
+                  {isSubmitting ? "Envoi..." : "Envoyer mon retour"}
                 </button>
               )}
             </div>
@@ -341,7 +321,7 @@ export function SurveyModalHost() {
 
 function rememberPendingSurvey(pendingSurvey: PendingSurvey) {
   if (typeof window === "undefined") return;
-  if (sessionStorage.getItem(SURVEY_DONE_KEY)) return;
+  if (hasCompletedSurvey()) return;
 
   sessionStorage.setItem(SURVEY_PENDING_KEY, JSON.stringify(pendingSurvey));
   window.dispatchEvent(new Event(SURVEY_PENDING_EVENT));
@@ -349,7 +329,8 @@ function rememberPendingSurvey(pendingSurvey: PendingSurvey) {
 
 function readPendingSurvey(currentPathname: string) {
   if (typeof window === "undefined") return null;
-  if (sessionStorage.getItem(SURVEY_DONE_KEY)) return null;
+  if (!surveyCompletionChecked) return null;
+  if (hasCompletedSurvey()) return null;
 
   const rawPendingSurvey = sessionStorage.getItem(SURVEY_PENDING_KEY);
   if (!rawPendingSurvey) return null;
@@ -362,6 +343,85 @@ function readPendingSurvey(currentPathname: string) {
   }
 
   return null;
+}
+
+function hasCompletedSurvey() {
+  return surveyCompletedInMemory;
+}
+
+function markSurveyCompleted(userId?: string | null) {
+  surveyCompletedInMemory = true;
+  surveyCompletionChecked = true;
+  surveyCompletionUserId = userId ?? surveyCompletionUserId;
+
+  if (typeof window !== "undefined") {
+    if (userId) {
+      window.localStorage.setItem(getSurveyDoneKey(userId), "1");
+    }
+    sessionStorage.removeItem(SURVEY_PENDING_KEY);
+    window.dispatchEvent(new Event(SURVEY_COMPLETED_EVENT));
+  }
+}
+
+async function syncSurveyCompletionStatus() {
+  if (typeof window === "undefined") return surveyCompletedInMemory;
+  if (surveyCompletionSyncPromise) return surveyCompletionSyncPromise;
+
+  surveyCompletionSyncPromise = resolveSurveyCompletionStatus();
+  const completed = await surveyCompletionSyncPromise;
+  surveyCompletionSyncPromise = null;
+  return completed;
+}
+
+async function resolveSurveyCompletionStatus() {
+  const supabase = createSupabaseBrowserClient();
+  const {
+    data: { session }
+  } = await supabase.auth.getSession();
+
+  if (!session) {
+    surveyCompletedInMemory = false;
+    surveyCompletionChecked = true;
+    surveyCompletionUserId = null;
+    return false;
+  }
+
+  if (surveyCompletionUserId === session.user.id && surveyCompletionChecked) {
+    return surveyCompletedInMemory;
+  }
+
+  surveyCompletedInMemory = false;
+  surveyCompletionChecked = false;
+  surveyCompletionUserId = session.user.id;
+
+  if (window.localStorage.getItem(getSurveyDoneKey(session.user.id)) === "1" || window.sessionStorage.getItem(LEGACY_SURVEY_DONE_KEY) === "1") {
+    markSurveyCompleted(session.user.id);
+    return true;
+  }
+
+  const response = await fetch("/api/survey", {
+    headers: {
+      Authorization: `Bearer ${session.access_token}`
+    }
+  });
+
+  if (!response.ok) {
+    surveyCompletionChecked = true;
+    return false;
+  }
+
+  const result = (await response.json()) as SurveyStatusResponse;
+  if (result.completed) {
+    markSurveyCompleted(session.user.id);
+    return true;
+  }
+
+  surveyCompletionChecked = true;
+  return false;
+}
+
+function getSurveyDoneKey(userId: string) {
+  return `${SURVEY_DONE_KEY_PREFIX}:${userId}`;
 }
 
 function IntroStep() {
@@ -417,75 +477,8 @@ function DreamFeatureStep({ value, onChange }: { value: string; onChange: (value
       <p className="text-[17px] leading-8 text-[#61596f]">
         On travaille en ce moment sur des choses qu'on a hâte de vous montrer : automatiser la prise de contact avec vos prestataires, un guide étape par étape encore plus poussé... et quelques surprises qu'on garde sous le coude pour l'instant. 👀
       </p>
-      <QuestionLabel required>Et vous, c'est quoi la feature dont vous rêvez ?</QuestionLabel>
-      <SurveyTextarea value={value} onChange={onChange} rows={4} placeholder="Votre réponse" />
-    </div>
-  );
-}
-
-const PRICING_MODEL_OPTIONS = [
-  {
-    value: "Abonnement mensuel",
-    label: "Abonnement mensuel",
-    description: "Un paiement mensuel pour débloquer des fonctionnalités premium jusqu’au jour J, résiliable à tout moment."
-  },
-  {
-    value: "Paiement unique",
-    label: "Paiement unique",
-    description: "Un seul paiement, plus élevé qu’un mois d’abonnement, pour accéder à des fonctionnalités premium jusqu’au jour J."
-  },
-  {
-    value: "Système de crédits",
-    label: "Système de crédits",
-    description: "Vous consommez des crédits à chaque utilisation d'une fonctionnalité premium. Vous pouvez recharger ces crédits par des paiements ponctuels selon vos besoins."
-  }
-];
-
-function PricingModelStep({ value, onChange }: { value: string[]; onChange: (value: string[]) => void }) {
-  function toggleOption(option: string) {
-    onChange(value.includes(option) ? value.filter((item) => item !== option) : [...value, option]);
-  }
-
-  return (
-    <div>
-      <div className="rounded-[26px] border border-[#ffd4d8] bg-[#fff0f1] p-4">
-        <p className="text-[14px] font-semibold uppercase tracking-[0.14em] text-[var(--hada-coral)]">Enquête de pricing</p>
-        <p className="mt-3 text-[16px] leading-7 text-[#61596f]">
-          <span aria-hidden="true">ℹ️</span>{" "}
-          Une partie des fonctionnalités seront gratuites mais nous sommes en train de définir le modèle de monétisation pour les fonctionnalités premium et nous avons besoin de votre avis.
-        </p>
-      </div>
-
-      <QuestionLabel required>En fonction de vos habitudes, quel(s) modèle(s) de paiement préférez-vous ?</QuestionLabel>
-      <p className="mt-2 text-[14px] font-medium text-[#8a817d]">Plusieurs réponses possibles.</p>
-
-      <div className="mt-6 space-y-3">
-        {PRICING_MODEL_OPTIONS.map((option) => {
-          const selected = value.includes(option.value);
-          return (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => toggleOption(option.value)}
-              className={`flex w-full items-start gap-4 rounded-[24px] border px-4 py-4 text-left transition ${
-                selected ? "border-[var(--hada-coral)] bg-[#fff0f1]" : "border-[#eadfda] bg-white"
-              }`}
-            >
-              <span
-                className={`mt-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] border ${
-                  selected ? "border-[var(--hada-coral)] bg-[var(--hada-coral)] text-white" : "border-[#b9b0ad] bg-white text-transparent"
-                }`}
-                aria-hidden="true"
-              >
-                ✓
-              </span>
-              <span className="text-[15px] leading-6 text-[var(--hada-navy)]">
-                <strong>{option.label}</strong> — {option.description}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      <p className="mt-5 text-[19px] font-semibold leading-7 text-[var(--hada-navy)]">Et vous, c'est quoi la feature dont vous rêvez ?</p>
+      <SurveyTextarea value={value} onChange={onChange} rows={4} placeholder="Champ optionnel" />
     </div>
   );
 }

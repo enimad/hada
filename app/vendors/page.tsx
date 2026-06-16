@@ -109,16 +109,18 @@ function VendorsPageContent() {
 
   const orderedCategories = useMemo(() => {
     return [...getVendorCategories()].sort((left, right) => {
-      const leftPriority = getCategoryPriority(left.key, categoryMap);
-      const rightPriority = getCategoryPriority(right.key, categoryMap);
+      const leftPriority = getCategoryPriority(left.key, candidates, categoryMap, reactions);
+      const rightPriority = getCategoryPriority(right.key, candidates, categoryMap, reactions);
 
       if (leftPriority !== rightPriority) {
         return leftPriority - rightPriority;
       }
 
-      return getCategoryDisplayIndex(left.key) - getCategoryDisplayIndex(right.key);
+      const rightCount = categoryMap.get(right.key) ?? 0;
+      const leftCount = categoryMap.get(left.key) ?? 0;
+      return rightCount - leftCount;
     });
-  }, [categoryMap]);
+  }, [candidates, categoryMap, reactions]);
 
   function markImageUnavailable(image: string) {
     setFailedImages((current) => (current.includes(image) ? current : [...current, image]));
@@ -348,25 +350,27 @@ function getCandidateSummary(candidate: VendorCandidateView) {
 
 function getCategoryPriority(
   category: VendorCategory,
-  categoryMap: Map<VendorCategory, number>
+  candidates: VendorCandidateView[],
+  categoryMap: Map<VendorCategory, number>,
+  reactions: Record<string, VendorReaction>
 ) {
   const count = categoryMap.get(category) ?? 0;
-  return count > 0 ? 0 : 1;
-}
+  const reaction = getCategoryReaction(category, candidates, reactions);
 
-function getCategoryDisplayIndex(category: VendorCategory) {
-  const index = getVendorCategories().findIndex((item) => item.key === category);
-  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  if (reaction === "liked") return 0;
+  if (count > 0) return 1;
+  if (count === 0) return 2;
+  return 3;
 }
 
 function ReactionBadge({ reaction, className = "left-4 top-4" }: { reaction: VendorReaction; className?: string }) {
-  if (reaction !== "liked") return null;
+  if (!reaction) return null;
 
-  const isLiked = true;
+  const isLiked = reaction === "liked";
   return (
     <div
       className={`absolute ${className} inline-flex h-10 min-w-[40px] items-center justify-center rounded-full px-3 text-[16px] font-semibold shadow-[0_10px_24px_rgba(46,28,54,0.14)] ${
-        "bg-[#fff0f1] text-[var(--hada-coral)]"
+        isLiked ? "bg-[#fff0f1] text-[var(--hada-coral)]" : "bg-[#fff1f1] text-[#d94b58]"
       }`}
     >
       <span aria-hidden="true">{isLiked ? "♡" : "👎"}</span>

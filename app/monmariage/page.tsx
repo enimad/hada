@@ -7,7 +7,8 @@ import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { AppShell } from "@/components/app-shell";
 import { PencilIcon } from "@/components/mobile-screen";
-import type { WeddingProfile } from "@/lib/types";
+import type { WeddingChecklistItem, WeddingProfile } from "@/lib/types";
+import { normalizeWeddingChecklist } from "@/lib/wedding-checklist";
 
 type EditableProfile = {
   partnerOneName: string;
@@ -34,6 +35,7 @@ export default function MonMariagePage() {
     budgetMax: ""
   });
   const [feedback, setFeedback] = useState("");
+  const [updatingChecklistItemId, setUpdatingChecklistItemId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
@@ -112,6 +114,10 @@ export default function MonMariagePage() {
     };
   }, [draft, profile]);
 
+  const checklist = useMemo(() => normalizeWeddingChecklist(profile?.wedding_checklist), [profile?.wedding_checklist]);
+  const checklistDoneCount = checklist.filter((item) => item.done).length;
+  const checklistProgress = Math.round((checklistDoneCount / checklist.length) * 100);
+
   if (isLoading) {
     return (
       <AppShell active="wedding">
@@ -136,21 +142,7 @@ export default function MonMariagePage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`
         },
-        body: JSON.stringify({
-          partner_one_name: draft.partnerOneName || null,
-          partner_two_name: draft.partnerTwoName || null,
-          wedding_date: draft.weddingDate || null,
-          wedding_period_text: draft.weddingDate ? null : "Pas encore de date fixe",
-          city: draft.city || null,
-          region: profile?.region ?? null,
-          country: profile?.country ?? "France",
-          guest_count: draft.guestCount ? Number(draft.guestCount) : null,
-          budget_min: profile?.budget_min ?? null,
-          budget_max: draft.budgetMax ? Number(draft.budgetMax) : null,
-          style: profile?.style ?? null,
-          ceremony_type: profile?.ceremony_type ?? null,
-          notes: profile?.notes ?? null
-        })
+        body: JSON.stringify(buildProfilePayload(profile, draft, checklist))
       });
 
       const result = await response.json();
@@ -162,6 +154,41 @@ export default function MonMariagePage() {
       setProfile(result.profile);
       setIsEditing(false);
       setFeedback("Informations mises à jour.");
+    });
+  }
+
+  function updateChecklistItem(itemId: string, done: boolean) {
+    const nextChecklist = checklist.map((item) => (item.id === itemId ? { ...item, done } : item));
+    const previousProfile = profile;
+
+    setProfile((current) => (current ? { ...current, wedding_checklist: nextChecklist } : current));
+
+    if (!accessToken) {
+      return;
+    }
+
+    setUpdatingChecklistItemId(itemId);
+    startTransition(async () => {
+      const response = await fetch("/api/profile", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: JSON.stringify(buildProfilePayload(profile, draft, nextChecklist))
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        setProfile(previousProfile);
+        setFeedback(result.error ?? "Impossible de mettre à jour la checklist.");
+        setUpdatingChecklistItemId(null);
+        return;
+      }
+
+      setProfile(result.profile);
+      setFeedback(done ? "Étape cochée." : "Étape remise à faire.");
+      setUpdatingChecklistItemId(null);
     });
   }
 
@@ -296,23 +323,205 @@ export default function MonMariagePage() {
           </div>
         </div>
 
-        <div className="mt-8">
-          <div className="rounded-[24px] border border-[#efe5df] bg-white p-5">
-            <h2 className="text-[22px] font-semibold tracking-[-0.03em] text-[var(--hada-navy)]">Prochaine étape suggérée</h2>
-            <p className="mt-4 text-[17px] leading-7 text-[#665f72]">
-              Hada recommande de commencer par la recherche de lieu, puis d&apos;enchaîner avec les prestataires qui dépendent le plus de la date et de la capacité.
-            </p>
-            <Link
-              href="/chat"
-              className="mt-6 inline-flex h-12 items-center justify-center rounded-full bg-[var(--hada-coral)] px-5 text-[15px] font-semibold text-white"
-            >
-              Retourner au chat
-            </Link>
-          </div>
-        </div>
+        <WeddingChecklistCard
+          checklist={checklist}
+          doneCount={checklistDoneCount}
+          progress={checklistProgress}
+          weddingDate={draft.weddingDate || profile?.wedding_date}
+          createdAt={profile?.created_at}
+          updatingItemId={updatingChecklistItemId}
+          onToggle={updateChecklistItem}
+        />
       </section>
     </AppShell>
   );
+}
+
+function WeddingChecklistCard({
+  checklist,
+  doneCount,
+  progress,
+  weddingDate,
+  createdAt,
+  updatingItemId,
+  onToggle
+}: {
+  checklist: WeddingChecklistItem[];
+  doneCount: number;
+  progress: number;
+  weddingDate?: string | null;
+  createdAt?: string | null;
+  updatingItemId: string | null;
+  onToggle: (itemId: string, done: boolean) => void;
+}) {
+  const timeline = useMemo(() => buildChecklistTimeline(checklist, weddingDate, createdAt), [checklist, weddingDate, createdAt]);
+  const weddingLabel = weddingDate ? formatDateFr(weddingDate) : "Date à confirmer";
+
+  return (
+    <div className="mt-8 overflow-hidden rounded-[30px] border border-[#efe5df] bg-[#fff8f5] shadow-[0_14px_34px_rgba(46,28,54,0.07)]">
+      <div className="border-b border-[#f1e2dc] bg-[linear-gradient(135deg,#fffaf7_0%,#fff1ed_58%,#ffe3e6_100%)] px-5 py-5 sm:px-7">
+        <p className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[var(--hada-coral)]">Planning</p>
+        <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-[28px] font-bold tracking-[-0.05em] text-[var(--hada-navy)]">Check-list mariage</h2>
+            <p className="mt-2 text-[15px] leading-6 text-[#6f6878]">
+              Une todo list étalée dans le temps, entre aujourd&apos;hui et le jour J. Hada peut cocher ou rouvrir les tâches depuis le chat.
+            </p>
+          </div>
+          <div className="rounded-[18px] border border-[#f4d8d1] bg-white/75 px-4 py-3 text-left shadow-[0_8px_22px_rgba(251,105,116,0.08)] sm:text-right">
+            <p className="text-[13px] font-semibold uppercase tracking-[0.12em] text-[#b79a96]">Jour J</p>
+            <p className="mt-1 text-[16px] font-semibold text-[var(--hada-navy)]">{weddingLabel}</p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center">
+          <div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-white/80">
+              <div className="h-full rounded-full bg-[linear-gradient(90deg,var(--hada-coral),#d86b91)] transition-all duration-500" style={{ width: `${progress}%` }} />
+            </div>
+            <p className="mt-2 text-[13px] font-semibold text-[#9a7779]">{doneCount} tâches complétées sur {checklist.length}</p>
+          </div>
+          <div className="inline-flex w-fit items-center rounded-full border border-[#f0d9d2] bg-white/80 px-4 py-2 text-[13px] font-semibold text-[var(--hada-navy)] shadow-[0_6px_16px_rgba(46,28,54,0.05)]">
+            Complétées ({doneCount})
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-7 px-4 py-5 sm:px-7">
+        {timeline.map((group) => (
+          <section key={group.key}>
+            <div className="mb-3 flex items-end justify-between gap-3">
+              <div>
+                <h3 className="text-[21px] font-bold tracking-[-0.04em] text-[var(--hada-navy)]">{group.label}</h3>
+                <p className="mt-0.5 text-[13px] font-medium text-[#a18486]">{group.relativeLabel}</p>
+              </div>
+              <p className="rounded-full border border-[#f1e2dc] bg-white px-3 py-1 text-[12px] font-semibold text-[#8a6f73] shadow-[0_4px_14px_rgba(46,28,54,0.05)]">
+                {group.doneCount} / {group.items.length}
+              </p>
+            </div>
+
+            <div className="space-y-2.5">
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onToggle(item.id, !item.done)}
+                  disabled={updatingItemId === item.id}
+                  className="grid w-full grid-cols-[34px_1fr_auto] items-center gap-3 rounded-[13px] border border-[#f0e1dc] bg-white px-3 py-3 text-left shadow-[0_4px_12px_rgba(46,28,54,0.04)] transition hover:-translate-y-0.5 hover:border-[#f8b8b7] hover:shadow-[0_8px_20px_rgba(251,105,116,0.08)] disabled:cursor-wait disabled:opacity-70"
+                >
+                  <span
+                    className={[
+                      "inline-flex h-6 w-6 items-center justify-center rounded-[6px] border text-[15px] font-bold transition",
+                      item.done ? "border-[var(--hada-coral)] bg-[var(--hada-coral)] text-white" : "border-[#d7c5bf] bg-[#fffaf7] text-transparent"
+                    ].join(" ")}
+                    aria-hidden="true"
+                  >
+                    ✓
+                  </span>
+                  <span className="min-w-0">
+                    <span className={["block text-[15px] font-semibold leading-5", item.done ? "text-[#8a91a0]" : "text-[var(--hada-navy)]"].join(" ")}>
+                      {item.title}
+                    </span>
+                    <span className="mt-1 block text-[12px] leading-5 text-[#796b74]">{item.description}</span>
+                  </span>
+                  <span className="text-[14px] font-semibold text-[#c68f90]">›</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+
+      <div className="border-t border-[#f0e3de] bg-white px-5 py-4">
+        <Link href="/chat" className="inline-flex h-11 items-center justify-center rounded-full bg-[var(--hada-coral)] px-5 text-[14px] font-semibold text-white">
+          Mettre à jour avec Hada →
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function buildChecklistTimeline(checklist: WeddingChecklistItem[], weddingDate?: string | null, createdAt?: string | null) {
+  const wedding = parseDate(weddingDate);
+  const accountCreated = parseDate(createdAt) ?? new Date();
+
+  const groups = new Map<
+    string,
+    {
+      key: string;
+      label: string;
+      relativeLabel: string;
+      timestamp: number;
+      items: WeddingChecklistItem[];
+      doneCount: number;
+    }
+  >();
+
+  for (const item of checklist) {
+    const dueDate = wedding ? addMonths(wedding, -item.dueOffsetMonths) : addMonths(accountCreated, Math.max(0, 15 - item.dueOffsetMonths));
+    const key = `${dueDate.getFullYear()}-${String(dueDate.getMonth() + 1).padStart(2, "0")}`;
+    const existing =
+      groups.get(key) ??
+      {
+        key,
+        label: formatMonthYear(dueDate),
+        relativeLabel: wedding ? formatRelativeToWedding(item.dueOffsetMonths) : "À planifier",
+        timestamp: dueDate.getTime(),
+        items: [],
+        doneCount: 0
+      };
+
+    existing.items.push(item);
+    existing.doneCount = existing.items.filter((entry) => entry.done).length;
+    groups.set(key, existing);
+  }
+
+  return Array.from(groups.values()).sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function parseDate(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function addMonths(date: Date, months: number) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + months);
+  return next;
+}
+
+function formatMonthYear(date: Date) {
+  return new Intl.DateTimeFormat("fr-FR", {
+    month: "long",
+    year: "numeric"
+  }).format(date);
+}
+
+function formatRelativeToWedding(offsetMonths: number) {
+  if (offsetMonths > 1) return `${offsetMonths} mois avant`;
+  if (offsetMonths === 1) return "1 mois avant";
+  if (offsetMonths === 0) return "Mois du mariage";
+  return "Après le mariage";
+}
+
+function buildProfilePayload(profile: WeddingProfile | null, draft: EditableProfile, checklist: WeddingChecklistItem[]) {
+  return {
+    partner_one_name: draft.partnerOneName || null,
+    partner_two_name: draft.partnerTwoName || null,
+    wedding_date: draft.weddingDate || null,
+    wedding_period_text: draft.weddingDate ? null : "Pas encore de date fixe",
+    city: draft.city || null,
+    region: profile?.region ?? null,
+    country: profile?.country ?? "France",
+    guest_count: draft.guestCount ? Number(draft.guestCount) : null,
+    budget_min: profile?.budget_min ?? null,
+    budget_max: draft.budgetMax ? Number(draft.budgetMax) : null,
+    style: profile?.style ?? null,
+    ceremony_type: profile?.ceremony_type ?? null,
+    notes: profile?.notes ?? null,
+    wedding_checklist: checklist
+  };
 }
 
 function EditableCard({

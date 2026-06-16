@@ -16,10 +16,18 @@ create table if not exists public.wedding_profiles (
   style text,
   ceremony_type text,
   notes text,
+  wedding_checklist jsonb not null default '[]'::jsonb,
+  wedding_budget_overrides jsonb not null default '{}'::jsonb,
   profile_completion_score integer default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.wedding_profiles
+  add column if not exists wedding_checklist jsonb not null default '[]'::jsonb;
+
+alter table public.wedding_profiles
+  add column if not exists wedding_budget_overrides jsonb not null default '{}'::jsonb;
 
 create table if not exists public.conversations (
   id uuid primary key default gen_random_uuid(),
@@ -107,6 +115,16 @@ create table if not exists public.survey_responses (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.offer_preferences (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null unique references auth.users(id) on delete cascade,
+  selected_plan text not null check (selected_plan in ('essential', 'serenity')),
+  billing_mode text not null check (billing_mode in ('monthly', 'one_time')),
+  source_path text not null default '/mon-offre',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -137,6 +155,11 @@ create trigger set_outreach_threads_updated_at
 before update on public.outreach_threads
 for each row execute procedure public.set_updated_at();
 
+drop trigger if exists set_offer_preferences_updated_at on public.offer_preferences;
+create trigger set_offer_preferences_updated_at
+before update on public.offer_preferences
+for each row execute procedure public.set_updated_at();
+
 alter table public.wedding_profiles enable row level security;
 alter table public.conversations enable row level security;
 alter table public.messages enable row level security;
@@ -145,8 +168,24 @@ alter table public.vendor_candidates enable row level security;
 alter table public.outreach_threads enable row level security;
 alter table public.outreach_messages enable row level security;
 alter table public.survey_responses enable row level security;
+alter table public.offer_preferences enable row level security;
 
--- MVP note:
--- pour aller vite, les routes serveur utilisent la service role key.
--- avant mise en production, il faudra brancher Supabase Auth et ecrire
--- des policies RLS basees sur auth.uid().
+-- Supabase Data API grants.
+-- The application currently reads/writes business tables only through server routes
+-- using SUPABASE_SERVICE_ROLE_KEY, so we explicitly grant the service_role access
+-- needed by supabase-js/PostgREST without exposing tables to anon/authenticated.
+grant usage on schema public to service_role;
+
+grant select, insert, update, delete on public.wedding_profiles to service_role;
+grant select, insert, update, delete on public.conversations to service_role;
+grant select, insert, update, delete on public.messages to service_role;
+grant select, insert, update, delete on public.vendor_requests to service_role;
+grant select, insert, update, delete on public.vendor_candidates to service_role;
+grant select, insert, update, delete on public.outreach_threads to service_role;
+grant select, insert, update, delete on public.outreach_messages to service_role;
+grant select, insert, update, delete on public.survey_responses to service_role;
+grant select, insert, update, delete on public.offer_preferences to service_role;
+
+-- Keep anon/authenticated blocked from direct table access for now.
+-- If the frontend starts querying tables directly with supabase-js, add explicit
+-- grants plus RLS policies based on auth.uid() for each exposed table.

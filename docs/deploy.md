@@ -7,7 +7,7 @@ Ce guide permet de mettre Hada en ligne proprement avec `Vercel + Supabase + Mis
 Configurer ces variables dans Vercel :
 
 ```env
-NEXT_PUBLIC_APP_URL=https://hadawedding.fr
+NEXT_PUBLIC_APP_URL=https://ton-domaine-public.com
 
 NEXT_PUBLIC_SUPABASE_URL=https://ton-projet.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=ta_cle_anon
@@ -40,14 +40,12 @@ Dans `Supabase > Authentication > URL Configuration` :
 
 - `Site URL` :
   - local : `http://localhost:3000`
-  - prod : `https://hadawedding.fr`
+  - prod : `https://ton-domaine-public.com`
 - `Redirect URLs` :
   - `http://localhost:3000/auth/continue`
-  - `http://localhost:3000/auth/callback`
-  - `https://hadawedding.fr/auth/continue`
-  - `https://hadawedding.fr/auth/callback`
+  - `https://ton-domaine-public.com/auth/continue`
   - `http://localhost:3000/login?confirmed=1`
-  - `https://hadawedding.fr/login?confirmed=1`
+  - `https://ton-domaine-public.com/login?confirmed=1`
 
 ## 4. Configuration Google OAuth
 

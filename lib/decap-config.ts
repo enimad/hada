@@ -1,0 +1,39 @@
+export const decapConfig = `backend:
+  name: github
+  repo: enimad/hada
+  branch: main
+  base_url: /api/decap
+  auth_endpoint: auth
+
+locale: fr
+site_url: https://hadawedding.fr
+display_url: https://hadawedding.fr
+logo_url: /brand/hada-wordmark.png
+publish_mode: editorial_workflow
+media_folder: public/uploads/blog
+public_folder: /uploads/blog
+
+collections:
+  - name: blog
+    label: Articles du Blog Hada
+    label_singular: Article
+    folder: content/blog
+    create: true
+    slug: "{{slug}}"
+    summary: "{{title}} - {{publishedAt}}"
+    fields:
+      - { label: Brouillon, name: draft, widget: boolean, default: false, required: false }
+      - { label: Titre, name: title, widget: string }
+      - { label: Slug URL, name: slug, widget: string, hint: "Exemple : comment-choisir-son-lieu-de-mariage" }
+      - { label: Description courte, name: description, widget: text, hint: "Résumé visible en haut de l'article." }
+      - { label: Catégorie, name: category, widget: select, options: ["Organisation", "Budget", "Prestataires", "Lieu de réception", "Inspiration", "Planning"] }
+      - { label: Date de publication, name: publishedAt, widget: datetime, date_format: "DD/MM/YYYY", time_format: "HH:mm", picker_utc: false }
+      - { label: Date de mise à jour, name: updatedAt, widget: datetime, required: false, date_format: "DD/MM/YYYY", time_format: "HH:mm", picker_utc: false }
+      - { label: Image principale, name: heroImage, widget: image }
+      - { label: Texte alternatif image, name: heroAlt, widget: string }
+      - { label: Extrait carte blog, name: excerpt, widget: text }
+      - { label: Titre SEO, name: seoTitle, widget: string }
+      - { label: Description SEO, name: seoDescription, widget: text }
+      - { label: Lien vidéo optionnel, name: videoUrl, widget: string, required: false, hint: "Coller ici un lien YouTube, Vimeo, Loom ou Google Drive. Ne pas uploader de vidéo lourde dans Git." }
+      - { label: Contenu, name: body, widget: markdown }
+`;

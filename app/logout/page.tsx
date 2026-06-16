@@ -29,7 +29,7 @@ export default function LogoutPage() {
         });
       } catch {}
 
-      router.replace("/");
+      router.replace("/signup");
       router.refresh();
     }
 

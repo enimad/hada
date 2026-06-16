@@ -1,115 +1,154 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { EyeIcon, EyeOffIcon, LineInput, MainButton, MobileScreen } from "@/components/mobile-screen";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { ArrowUpIcon, DividerOr, HadaPortrait, HadaWordmark, LineInput, MobileScreen } from "@/components/mobile-screen";
 
-export default function SignupPage() {
+export default function SignupEntryPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setEmail(params.get("email") ?? "");
+    const supabase = createSupabaseBrowserClient();
+
+    async function clearPublicEntrySession() {
+      try {
+        await supabase.auth.signOut({ scope: "local" });
+      } catch {}
+
+      try {
+        await fetch("/api/auth/logout", {
+          method: "POST",
+          credentials: "include"
+        });
+      } catch {}
+
+      const keysToRemove = Object.keys(window.localStorage).filter((key) => key.startsWith("sb-") || key.includes("supabase") || key.startsWith("hada:"));
+      keysToRemove.forEach((key) => window.localStorage.removeItem(key));
+      window.sessionStorage.clear();
+    }
+
+    void clearPublicEntrySession();
   }, []);
 
+  function submitEmail() {
+    startTransition(async () => {
+      setMessage("");
+      const response = await fetch("/api/auth/check-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+      });
+
+      const result = (await response.json()) as { exists?: boolean; error?: string };
+      if (!response.ok) {
+        setMessage(result.error ?? "Impossible de verifier cet email.");
+        return;
+      }
+
+      router.push(result.exists ? `/login?email=${encodeURIComponent(email)}` : `/signup/create?email=${encodeURIComponent(email)}`);
+    });
+  }
+
   return (
-    <MobileScreen className="pb-10 pt-10">
-      <div className="pt-6 text-center">
-        <h1 className="text-[40px] font-bold tracking-[-0.06em] text-[var(--hada-navy)] sm:text-[56px]">Inscris-toi</h1>
-        <p className="mx-auto mt-10 max-w-[320px] text-[18px] font-medium leading-[1.25] tracking-[-0.04em] text-[var(--hada-navy)] sm:max-w-[360px] sm:text-[22px]">
-          Ta première analyse t&apos;attend... connecte-toi pour la découvrir
+    <MobileScreen className="h-[100svh] min-h-0 justify-start overflow-hidden pb-[clamp(12px,1.8svh,22px)] pt-[clamp(18px,3svh,34px)]">
+      <div className="text-center">
+        <HadaWordmark className="mx-auto !w-[clamp(132px,17svh,174px)] !max-w-[58vw]" />
+        <p className="mx-auto mt-[clamp(8px,1.5svh,16px)] max-w-[270px] text-[clamp(16px,2.2svh,22px)] font-semibold tracking-[-0.035em] text-[var(--hada-navy)] sm:max-w-none">
+          Ton wedding planner de poche
         </p>
       </div>
 
+      <div className="mt-[clamp(14px,2.4svh,26px)]">
+        <div className="relative mx-auto w-fit">
+          <div className="hada-home-aura absolute inset-[-14%] rounded-full" />
+          <HadaPortrait variant="circle" className="relative !w-[clamp(132px,24svh,210px)] !max-w-[58vw]" />
+        </div>
+      </div>
+
+      <div className="mt-[clamp(16px,2.8svh,30px)]">
+        <button
+          type="button"
+          className="flex h-[clamp(48px,6.2svh,62px)] w-full items-center justify-center gap-3 rounded-full border border-[#d6c8c1] bg-white px-5 text-[clamp(14px,1.9svh,17px)] font-medium tracking-[-0.02em] text-[#1f1f1f] shadow-[0_14px_30px_rgba(57,39,74,0.08)] transition hover:shadow-[0_18px_34px_rgba(57,39,74,0.12)] sm:gap-4"
+          onClick={() => {
+            startTransition(async () => {
+              setMessage("");
+              const supabase = createSupabaseBrowserClient();
+              const { error } = await supabase.auth.signInWithOAuth({
+                provider: "google",
+                options: {
+                  redirectTo: `${window.location.origin}/auth/callback?next=/auth/continue`
+                }
+              });
+
+              if (error) {
+                setMessage(
+                  "Connexion Google indisponible. Verifie dans Supabase Auth > Providers > Google que le provider est active et que l'URL de redirection localhost de cette preview est autorisee."
+                );
+              }
+            });
+          }}
+        >
+          <GoogleIcon className="h-[clamp(22px,3svh,28px)] w-[clamp(22px,3svh,28px)] shrink-0" />
+          <span className="font-semibold text-[#303030]">Continuer avec Google</span>
+        </button>
+      </div>
+
+      <DividerOr className="my-[clamp(12px,2.2svh,24px)] text-[clamp(14px,1.9svh,17px)]" />
+
       <form
-        className="mt-12"
+        className="mt-0"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!acceptedTerms) return;
-
-          startTransition(async () => {
-            setMessage("");
-            const signupResponse = await fetch("/api/auth/signup", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({ email, password })
-            });
-
-            const signupResult = await signupResponse.json();
-            if (!signupResponse.ok) {
-              setMessage(signupResult.error ?? "Impossible de créer le compte.");
-              return;
-            }
-
-            setMessage("Compte créé. Vérifiez votre email pour confirmer votre compte, puis poursuivez avec le lien reçu.");
-            setPassword("");
-            setAcceptedTerms(false);
-          });
+          if (!email || isPending) return;
+          submitEmail();
         }}
       >
-        <div className="space-y-8">
-          <LineInput label="Ton adresse mail" value={email} onChange={setEmail} placeholder="hada@gmail.com" type="email" inputMode="email" />
-          <LineInput
-            label="Ton mot de passe"
-            value={password}
-            onChange={setPassword}
-            type={showPassword ? "text" : "password"}
-            placeholder="***********"
-            rightSlot={
-              <button type="button" onClick={() => setShowPassword((current) => !current)} className="text-[#8f8884]">
-                {showPassword ? <EyeOffIcon className="h-7 w-7" /> : <EyeIcon className="h-7 w-7" />}
-              </button>
-            }
-          />
-        </div>
-
-        <label className="mt-12 flex items-start gap-4">
-          <button
-            type="button"
-            onClick={() => setAcceptedTerms((current) => !current)}
-            className={`mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border ${
-              acceptedTerms ? "border-[var(--hada-coral)] bg-[#fff0f1]" : "border-[#d0c7c2] bg-transparent"
-            }`}
-          >
-            {acceptedTerms ? <span className="h-3 w-3 rounded-full bg-[var(--hada-coral)]" /> : null}
-          </button>
-          <span className="text-[16px] font-medium leading-[1.4] tracking-[-0.03em] text-[#8a817d] sm:text-[18px]">
-            En créant un compte, vous acceptez{" "}
-            <Link href="/cgu" target="_blank" rel="noreferrer" className="underline">
-              nos conditions générales d&apos;utilisation.
-            </Link>
-          </span>
-        </label>
-
-        <div className="mt-10">
-          <MainButton type="submit" disabled={!acceptedTerms || !email || !password || isPending}>
-            Je continue
-          </MainButton>
-        </div>
-
-        <div className="mt-5 text-center">
-          <p className="text-[14px] font-medium text-[#8a817d]">Vous avez déjà un compte Hada ?</p>
-          <Link
-            href={email ? `/login?email=${encodeURIComponent(email)}` : "/login"}
-            className="mt-3 inline-flex h-11 items-center justify-center rounded-full border border-[#eadfda] bg-white px-5 text-[14px] font-semibold text-[var(--hada-navy)] shadow-[0_8px_20px_rgba(46,28,54,0.08)]"
-          >
-            Se connecter
-          </Link>
-        </div>
-
-        {message ? (
-          <div className="mt-5 rounded-[22px] border border-[#ffd4d8] bg-[#fff1f3] px-5 py-4 text-center">
-            <p className="text-[14px] font-semibold text-[var(--hada-navy)]">{message}</p>
-          </div>
-        ) : null}
+        <LineInput
+          label="Votre email"
+          value={email}
+          onChange={setEmail}
+          placeholder="hada@gmail.com"
+          type="email"
+          inputMode="email"
+          compact
+          rightSlot={
+            <button
+              type="button"
+              disabled={!email || isPending}
+              className="flex h-[clamp(44px,5.8svh,52px)] w-[clamp(44px,5.8svh,52px)] shrink-0 items-center justify-center rounded-full bg-[var(--hada-coral)] text-white shadow-[0_10px_24px_rgba(251,105,116,0.25)] transition disabled:bg-[#ffd9dc] disabled:text-[#847a78] disabled:shadow-none"
+              onClick={submitEmail}
+            >
+              <ArrowUpIcon className="h-[clamp(22px,3svh,26px)] w-[clamp(22px,3svh,26px)]" />
+            </button>
+          }
+        />
+        {message ? <p className="mt-4 text-center text-[14px] text-[#8d8387] sm:text-[15px]">{message}</p> : null}
       </form>
+
+      <div className="mt-[clamp(10px,1.8svh,20px)] flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-center text-[clamp(11px,1.6svh,13px)] font-medium text-[#8d8387]">
+        <Link href="/privacy" className="underline underline-offset-4">
+          Politique de confidentialité
+        </Link>
+        <Link href="/cgu" className="underline underline-offset-4">
+          Conditions d&apos;utilisation
+        </Link>
+      </div>
     </MobileScreen>
+  );
+}
+
+function GoogleIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path fill="#EA4335" d="M12 10.2v3.9h5.4c-.2 1.3-.8 2.4-1.8 3.2l3 2.3c1.8-1.6 2.9-4 2.9-6.9 0-.7-.1-1.4-.2-2H12Z" />
+      <path fill="#4285F4" d="M12 22c2.6 0 4.8-.9 6.4-2.4l-3-2.3c-.8.6-1.9 1-3.4 1-2.6 0-4.9-1.8-5.7-4.2l-3.1 2.4C4.8 19.8 8.1 22 12 22Z" />
+      <path fill="#FBBC05" d="M6.3 14.1A5.9 5.9 0 0 1 6 12c0-.7.1-1.4.3-2.1L3.2 7.5A10.1 10.1 0 0 0 2 12c0 1.6.4 3.2 1.2 4.5l3.1-2.4Z" />
+      <path fill="#34A853" d="M12 5.7c1.4 0 2.7.5 3.7 1.5l2.8-2.8A10 10 0 0 0 2 12c0 1.6.4 3.2 1.2 4.5l3.1-2.4C7.1 9.4 9.4 5.7 12 5.7Z" />
+    </svg>
   );
 }

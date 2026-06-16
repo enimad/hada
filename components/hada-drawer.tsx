@@ -10,13 +10,15 @@ import type { WeddingProfile } from "@/lib/types";
 type HadaDrawerProps = {
   open: boolean;
   onClose: () => void;
-  active?: "chat" | "wedding" | "vendors";
+  active?: "chat" | "wedding" | "budget" | "offer" | "vendors";
 };
 
 const items = [
   { key: "chat", label: "Chat avec Hada", href: "/chat", icon: "sparkles" },
   { key: "wedding", label: "Mon mariage", href: "/monmariage", icon: "grid" },
-  { key: "vendors", label: "Mes prestataires", href: "/vendors", icon: "heart" }
+  { key: "budget", label: "Budget", href: "/budget", icon: "wallet" },
+  { key: "vendors", label: "Mes prestataires", href: "/vendors", icon: "heart" },
+  { key: "offer", label: "Mon offre", href: "/mon-offre", icon: "tag", variant: "subscription" }
 ] as const;
 
 const feedbackFormUrl = "https://docs.google.com/forms/d/e/1FAIpQLSdSLTUfwxa179tPHL00z3bUYZxRc9VNPPFqelqQLLComRF0Bw/viewform";
@@ -111,13 +113,20 @@ export function HadaDrawer({ open, onClose, active = "chat" }: HadaDrawerProps) 
         <nav className="mt-9 space-y-3">
           {items.map((item) => {
             const isActive = item.key === active;
+            const isSubscription = "variant" in item && item.variant === "subscription";
             return (
               <button
                 key={item.key}
                 type="button"
                 onClick={() => navigate(item.href)}
                 className={`flex items-center gap-3 rounded-full px-4 py-4 text-[16px] font-medium tracking-[-0.02em] ${
-                  isActive ? "bg-[var(--hada-coral)] text-white" : "text-[#4d4a4f]"
+                  isSubscription
+                    ? isActive
+                      ? "bg-[var(--hada-navy)] text-white shadow-[0_12px_26px_rgba(43,33,79,0.16)]"
+                      : "border border-[#ffd4d8] bg-[#fff7f4] text-[var(--hada-coral)]"
+                    : isActive
+                      ? "bg-[var(--hada-coral)] text-white"
+                      : "text-[#4d4a4f]"
                 }`}
               >
                 <DrawerIcon kind={item.icon} />
@@ -159,9 +168,28 @@ export function HadaDrawer({ open, onClose, active = "chat" }: HadaDrawerProps) 
   );
 }
 
-function DrawerIcon({ kind }: { kind: "sparkles" | "grid" | "heart" }) {
+function DrawerIcon({ kind }: { kind: "sparkles" | "grid" | "wallet" | "tag" | "heart" }) {
   if (kind === "heart") {
     return <HeartIcon className="h-6 w-6" />;
+  }
+
+  if (kind === "wallet") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+        <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18a2 2 0 0 1 2 2v10.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5Z" />
+        <path d="M4 8.5h16" />
+        <path d="M16.5 14.5h.01" />
+      </svg>
+    );
+  }
+
+  if (kind === "tag") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+        <path d="M20 13.2 13.2 20a2 2 0 0 1-2.8 0L4 13.6V4h9.6L20 10.4a2 2 0 0 1 0 2.8Z" />
+        <path d="M8.5 8.5h.01" />
+      </svg>
+    );
   }
 
   if (kind === "grid") {

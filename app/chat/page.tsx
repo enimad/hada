@@ -3,18 +3,23 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { ArrowUpIcon, HadaMark, MicIcon, PlusIcon, SearchIcon, SparkIcon } from "@/components/mobile-screen";
+import { stripHadaState } from "@/lib/hada-state";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { UiChatMessage } from "@/lib/types";
 
 const BETA_TOAST = "Cette fonctionnalité n'est pas disponible en version bêta.";
 const BETA_BANNER =
   "Hada est en version bêta. Comme chaque beau mariage, les détails se peaufinent avec soin. Certaines fonctionnalités sont en cours de finalisation - merci pour votre patience et votre confiance.";
+const NORMAL_CHAT_REQUEST_TIMEOUT_MS = 45000;
+const SEARCH_CHAT_REQUEST_TIMEOUT_MS = 90000;
 
 export default function ChatPage() {
   const router = useRouter();
+  const pathname = usePathname();
+  const apiPath = pathname === "/chat-v2" ? "/api/chat-v2" : "/api/chat";
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -32,6 +37,7 @@ export default function ChatPage() {
   const typingTimeoutRef = useRef<number | null>(null);
   const waitingTimeoutRefs = useRef<number[]>([]);
   const isFirstRenderRef = useRef(true);
+  const isChatBusy = isSubmitting || Boolean(typingMessageId) || Boolean(streamingMessageId);
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
@@ -64,7 +70,7 @@ export default function ChatPage() {
       setUserId(session.user.id);
       setShowBeta(window.sessionStorage.getItem(getBetaBannerKey(session.user.id)) !== "hidden");
 
-      const response = await fetch("/api/chat", {
+      const response = await fetch(apiPath, {
         headers: {
           Authorization: `Bearer ${session.access_token}`
         }
@@ -89,7 +95,7 @@ export default function ChatPage() {
     }
 
     void loadConversation();
-  }, [router]);
+  }, [apiPath, router]);
 
   useEffect(() => {
     const behavior = isFirstRenderRef.current ? "auto" : "smooth";
@@ -114,20 +120,20 @@ export default function ChatPage() {
 
   async function submitMessage(options?: { contentOverride?: string; action?: string }) {
     const content = options?.contentOverride?.trim() || draft.trim();
-    if (!content || isSubmitting) return;
+    if (!content || isChatBusy) return;
 
     const placeholderId = `assistant-typing-${Date.now()}`;
-    const expectsSearch = looksLikeSearchIntent(content);
     const optimisticMessage: UiChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
       content
     };
+    const expectsSearchFlow = options?.action === "retry_search" || isLikelyExplicitSearchRequest(content);
 
     setMessages((current) => [...current, optimisticMessage, { id: placeholderId, role: "assistant", content: "" }]);
     setTypingMessageId(placeholderId);
-    setWaitingLabel(expectsSearch ? "Hada prépare la recherche" : "Hada réfléchit");
-    scheduleWaitingLabels(expectsSearch);
+    setWaitingLabel(options?.action === "retry_search" ? "Hada prépare la recherche" : "Hada réfléchit");
+    scheduleWaitingLabels(expectsSearchFlow);
     setDraft("");
     setIsSubmitting(true);
 
@@ -146,26 +152,27 @@ export default function ChatPage() {
       return;
     }
 
+    const controller = new AbortController();
+    const requestTimeout = window.setTimeout(
+      () => controller.abort(),
+      expectsSearchFlow ? SEARCH_CHAT_REQUEST_TIMEOUT_MS : NORMAL_CHAT_REQUEST_TIMEOUT_MS
+    );
+
     try {
-      const response = await fetch("/api/chat", {
+      const response = await fetch(apiPath, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`
         },
-        body: JSON.stringify({ content, action: options?.action })
+        body: JSON.stringify({ content, action: options?.action }),
+        signal: controller.signal
       });
 
       const result = await response.json();
       if (!response.ok) {
-        setMessages((current) => [
-          ...current.filter((message) => message.id !== placeholderId),
-          {
-            id: `assistant-error-${Date.now()}`,
-            role: "assistant",
-            content: result.error ?? "Je rencontre un souci temporaire pour répondre."
-          }
-        ]);
+        setMessages((current) => current.filter((message) => message.id !== placeholderId));
+        setBetaToast("Hada n'a pas pu finaliser cette réponse. Réessayez dans un instant.");
         setTypingMessageId(null);
         clearWaitingTimers();
         return;
@@ -176,21 +183,58 @@ export default function ChatPage() {
       setTypingMessageId(null);
       clearWaitingTimers();
       startStreamingMessage(assistantMessage);
+    } catch (error) {
+      const recoveredMessages =
+        accessToken && error instanceof DOMException && error.name === "AbortError"
+          ? await refreshMessagesFromServer(accessToken)
+          : null;
+      const hasRecoveredAnswer = recoveredMessages ? hasAssistantAfterUserMessage(recoveredMessages, content) : false;
+
+      if (!hasRecoveredAnswer) {
+        setMessages((current) => current.filter((message) => message.id !== placeholderId));
+      }
+      setTypingMessageId(null);
+      clearWaitingTimers();
+      if (!hasRecoveredAnswer) {
+        setBetaToast(
+          error instanceof DOMException && error.name === "AbortError"
+            ? "Hada prend un peu plus de temps. Si vous relancez, elle reprendra le dernier sujet."
+            : "Hada n'a pas pu finaliser cette réponse. Réessayez dans un instant."
+        );
+      }
     } finally {
+      window.clearTimeout(requestTimeout);
       setIsSubmitting(false);
     }
   }
 
-  function scheduleWaitingLabels(expectsSearch: boolean) {
-    clearWaitingTimers();
-    if (!expectsSearch) return;
+  async function refreshMessagesFromServer(token: string) {
+    try {
+      const response = await fetch(apiPath, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (!response.ok) return null;
+      const result = (await response.json()) as { messages: UiChatMessage[] };
+      const nextMessages = (result.messages ?? []).map(normalizeMessage);
+      setMessages(nextMessages);
+      return nextMessages;
+    } catch {
+      return null;
+    }
+  }
 
-    const labels = ["Recherche des prestataires en cours", "Vérification des résultats trouvés", "Création des fiches prestataires"];
-    waitingTimeoutRefs.current = [
-      window.setTimeout(() => setWaitingLabel(labels[0]), 3500),
-      window.setTimeout(() => setWaitingLabel(labels[1]), 8500),
-      window.setTimeout(() => setWaitingLabel(labels[2]), 15000)
-    ];
+  function scheduleWaitingLabels(isSearchFlow = false) {
+    clearWaitingTimers();
+    waitingTimeoutRefs.current = isSearchFlow
+      ? [
+          window.setTimeout(() => setWaitingLabel("Hada prépare la recherche"), 2800),
+          window.setTimeout(() => setWaitingLabel("Recherche des prestataires en cours"), 9000),
+          window.setTimeout(() => setWaitingLabel("Création des fiches prestataires"), 18000),
+          window.setTimeout(() => setWaitingLabel("Encore quelques secondes pour fiabiliser les fiches"), 34000)
+        ]
+      : [];
   }
 
   function clearWaitingTimers() {
@@ -316,7 +360,7 @@ export default function ChatPage() {
                             action: "retry_search"
                           })
                         }
-                        disabled={isSubmitting}
+                        disabled={isChatBusy}
                         className="inline-flex h-12 items-center justify-center rounded-full bg-[var(--hada-coral)] px-5 text-[15px] font-semibold text-white disabled:opacity-60"
                       >
                         {message.ctaLabel}
@@ -363,7 +407,12 @@ export default function ChatPage() {
               <textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
+                disabled={isChatBusy}
                 onKeyDown={(event) => {
+                  if (isChatBusy) {
+                    event.preventDefault();
+                    return;
+                  }
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
                     void submitMessage();
@@ -371,13 +420,14 @@ export default function ChatPage() {
                 }}
                 placeholder="Pose ta question à Hada..."
                 rows={1}
-                className="min-h-[70px] w-full resize-none bg-transparent text-[16px] leading-7 text-[var(--hada-navy)] outline-none placeholder:text-[#8b817f] sm:text-[17px]"
+                className="min-h-[70px] w-full resize-none bg-transparent text-[16px] leading-7 text-[var(--hada-navy)] outline-none placeholder:text-[#8b817f] disabled:cursor-not-allowed disabled:opacity-60 sm:text-[17px]"
               />
               <div className="mt-3 flex items-center justify-between">
                 <button
                   type="button"
                   onClick={() => setBetaToast(BETA_TOAST)}
-                  className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#eadfda] bg-white text-[#955c61]"
+                  disabled={isChatBusy}
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#eadfda] bg-white text-[#955c61] disabled:opacity-50"
                   aria-label="Ajouter une pièce jointe"
                 >
                   <PlusIcon className="h-5 w-5" />
@@ -386,7 +436,8 @@ export default function ChatPage() {
                   <button
                     type="button"
                     onClick={() => setBetaToast(BETA_TOAST)}
-                    className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#eadfda] bg-white text-[#955c61]"
+                    disabled={isChatBusy}
+                    className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[#eadfda] bg-white text-[#955c61] disabled:opacity-50"
                     aria-label="Envoyer une note vocale"
                   >
                     <MicIcon className="h-5 w-5" />
@@ -394,7 +445,7 @@ export default function ChatPage() {
                   <button
                     type="button"
                     onClick={() => void submitMessage()}
-                    disabled={!draft.trim() || isSubmitting}
+                    disabled={!draft.trim() || isChatBusy}
                     className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-[var(--hada-coral)] text-white shadow-[0_12px_24px_rgba(251,105,116,0.24)] disabled:opacity-50"
                   >
                     <ArrowUpIcon className="h-5 w-5" />
@@ -483,7 +534,7 @@ function normalizeMessage(message: UiChatMessage): UiChatMessage {
 }
 
 function sanitizeAssistantMessage(input: string) {
-  return input
+  return stripHadaState(input)
     .replace(/\r/g, "")
     .replace(/^---$/gm, "")
     .replace(/^#{1,6}\s*/gm, "")
@@ -496,43 +547,73 @@ function sanitizeAssistantMessage(input: string) {
 }
 
 function pickTypingDelay(lastChar: string) {
-  if (/[.!?]/.test(lastChar)) return 80 + Math.floor(Math.random() * 35);
-  if (/[,:;]/.test(lastChar)) return 50 + Math.floor(Math.random() * 30);
-  if (/\s/.test(lastChar)) return 12 + Math.floor(Math.random() * 14);
-  return 6 + Math.floor(Math.random() * 10);
+  if (/[.!?]/.test(lastChar)) return 42 + Math.floor(Math.random() * 26);
+  if (/[,:;]/.test(lastChar)) return 24 + Math.floor(Math.random() * 18);
+  if (/\s/.test(lastChar)) return 5 + Math.floor(Math.random() * 8);
+  return 3 + Math.floor(Math.random() * 6);
 }
 
 function pickChunkSize(fullText: string, index: number) {
   const nextChar = fullText[index] ?? "";
   if (/\s/.test(nextChar)) return 1;
   const random = Math.random();
-  if (random < 0.12) return 1;
-  if (random < 0.52) return 2;
-  if (random < 0.88) return 3;
-  return 4 + Math.round(Math.random());
+  if (random < 0.12) return 2;
+  if (random < 0.52) return 4;
+  if (random < 0.88) return 6;
+  return 8 + Math.round(Math.random() * 2);
+}
+
+function isLikelyExplicitSearchRequest(value: string) {
+  const normalized = normalizeForClientIntent(value);
+  if (!normalized || !hasClientVendorCategory(normalized) || isClientNonSearchInquiry(normalized)) return false;
+
+  const hasStrongSearchVerb =
+    /\b(cherche|chercher|recherche|rechercher|trouve|trouver|deniche|denicher|selectionne|selectionner|propose|proposer|recommande|recommander|liste|lister|lance|lancer|prepare|preparer)\b/.test(
+      normalized
+    );
+  const hasNeedPhrase =
+    /\b(j ai besoin|on a besoin|nous avons besoin|il me faut|il nous faut|je veux|on veut|nous voulons|je voudrais|on voudrait|nous voudrions)\b/.test(
+      normalized
+    );
+  const asksForFindingHelp =
+    /\b(aide moi a trouver|aidez moi a trouver|peux tu trouver|pouvez vous trouver|peux tu chercher|pouvez vous chercher|occupe toi de trouver|occupez vous de trouver)\b/.test(
+      normalized
+    );
+
+  return hasStrongSearchVerb || hasNeedPhrase || asksForFindingHelp;
+}
+
+function isClientNonSearchInquiry(value: string) {
+  return /\b(c est quoi|c quoi|qu est ce que|ca veut dire quoi|definition|explique|je veux comprendre|j aimerais comprendre|je veux savoir|j aimerais savoir|je ne comprends pas|a quoi ca sert|comment ca marche|tu connais|connais tu|avis|conseil|pourquoi|combien ca coute|budget moyen)\b/.test(
+    value
+  );
+}
+
+function hasClientVendorCategory(value: string) {
+  return /(lieu|domaine|chateau|salle|traiteur|photographe|photo|videaste|video|cameraman|cadreur|film|dj|musicien|groupe|chanteur|fleur|fleuriste|deco|decoration|robe|costume|transport|navette|chauffeur)/.test(
+    value
+  );
+}
+
+function hasAssistantAfterUserMessage(messages: UiChatMessage[], content: string) {
+  const normalizedContent = normalizeForClientIntent(content);
+  const userIndex = messages.findLastIndex((message) => message.role === "user" && normalizeForClientIntent(message.content) === normalizedContent);
+  return userIndex >= 0 && messages.slice(userIndex + 1).some((message) => message.role === "assistant" && message.content.trim().length > 0);
+}
+
+function normalizeForClientIntent(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’]/g, " ")
+    .replace(/[^a-z0-9€ ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getBetaBannerKey(userId: string) {
   return `hada:chat-beta-hidden:${userId}`;
-}
-
-function looksLikeSearchIntent(value: string) {
-  const normalized = value
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-
-  const asksAdvice = /(conseil|conseils|comment choisir|aide moi a choisir|aidez moi a choisir|difference|comparer|avis sur|criteres|questions a poser)/.test(
-    normalized
-  );
-  if (asksAdvice) return false;
-
-  const hasSearchVerb = /(cherche|chercher|trouve|trouver|deniche|denicher|recommande|recommandation|propose|proposer)/.test(normalized);
-  const hasVendorType = /(prestataire|lieu|domaine|salle|traiteur|photographe|videaste|video|dj|musicien|groupe|fleuriste|decorateur|robe|costume|transport)/.test(
-    normalized
-  );
-
-  return hasSearchVerb && hasVendorType;
 }
 
 function parseMessageBlocks(content: string) {

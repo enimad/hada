@@ -10,12 +10,7 @@ type SurveyPayload = {
   appreciated?: string;
   frustrated?: string;
   reuseIntent?: string;
-  tooExpensivePrice?: string;
-  expensiveButAcceptablePrice?: string;
-  goodDealPrice?: string;
-  tooCheapPrice?: string;
   dreamFeature?: string;
-  pricingModels?: string[];
 };
 
 type SurveyContext = {
@@ -32,6 +27,29 @@ type SurveyContext = {
   submittedAt: string;
 };
 
+export async function GET(request: NextRequest) {
+  const { user, error: authError } = await getAuthenticatedUser(request);
+  if (!user) {
+    return NextResponse.json({ error: authError }, { status: 401 });
+  }
+
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("survey_responses")
+    .select("id")
+    .eq("user_id", user.id)
+    .eq("email_sent", true)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (error) {
+    console.error("Survey status check failed", error);
+    return NextResponse.json({ completed: false });
+  }
+
+  return NextResponse.json({ completed: Boolean(data?.length) });
+}
+
 export async function POST(request: NextRequest) {
   const { user, error: authError } = await getAuthenticatedUser(request);
   if (!user) {
@@ -47,35 +65,18 @@ export async function POST(request: NextRequest) {
   const appreciated = normalizeAnswer(body.appreciated);
   const frustrated = normalizeAnswer(body.frustrated);
   const reuseIntent = normalizeAnswer(body.reuseIntent);
-  const tooExpensivePrice = normalizeAnswer(body.tooExpensivePrice);
-  const expensiveButAcceptablePrice = normalizeAnswer(body.expensiveButAcceptablePrice);
-  const goodDealPrice = normalizeAnswer(body.goodDealPrice);
-  const tooCheapPrice = normalizeAnswer(body.tooCheapPrice);
-  const pricingModels = Array.isArray(body.pricingModels)
-    ? body.pricingModels.map((item) => normalizeAnswer(item)).filter(Boolean)
-    : [];
-
-  if (!appreciated || !frustrated || !reuseIntent || !tooExpensivePrice || !expensiveButAcceptablePrice || !goodDealPrice || !tooCheapPrice || pricingModels.length === 0) {
+  if (!appreciated || !frustrated || !reuseIntent) {
     return NextResponse.json({ error: "Réponses obligatoires manquantes." }, { status: 400 });
   }
 
   const supabase = createSupabaseServerClient();
   const context = await buildSurveyContext(supabase, user.id, user.email ?? null);
-  const surveyAnswers = {
+  const emailText = buildSurveyEmailText({
     rating,
     appreciated,
     frustrated,
     reuseIntent,
-    tooExpensivePrice,
-    expensiveButAcceptablePrice,
-    goodDealPrice,
-    tooCheapPrice,
     dreamFeature: normalizeAnswer(body.dreamFeature),
-    pricingModels
-  };
-
-  const emailText = buildSurveyEmailText({
-    ...surveyAnswers,
     sourcePath: body.sourcePath ?? null,
     sourceVendorSlug: body.sourceVendorSlug ?? null,
     context
@@ -90,11 +91,8 @@ export async function POST(request: NextRequest) {
     appreciated,
     frustrated,
     reuse_intent: reuseIntent,
-    dream_feature: surveyAnswers.dreamFeature,
-    context_json: {
-      ...context,
-      surveyAnswers
-    },
+    dream_feature: normalizeAnswer(body.dreamFeature),
+    context_json: context,
     email_sent: emailSent
   });
 
@@ -106,6 +104,10 @@ export async function POST(request: NextRequest) {
       },
       { status: 500 }
     );
+  }
+
+  if (!emailSent) {
+    return NextResponse.json({ error: "Impossible d'envoyer l'email du survey pour le moment.", emailSent: false }, { status: 502 });
   }
 
   return NextResponse.json({ ok: true, emailSent });
@@ -155,12 +157,7 @@ function buildSurveyEmailText({
   appreciated,
   frustrated,
   reuseIntent,
-  tooExpensivePrice,
-  expensiveButAcceptablePrice,
-  goodDealPrice,
-  tooCheapPrice,
   dreamFeature,
-  pricingModels,
   sourcePath,
   sourceVendorSlug,
   context
@@ -169,12 +166,7 @@ function buildSurveyEmailText({
   appreciated: string;
   frustrated: string;
   reuseIntent: string;
-  tooExpensivePrice: string;
-  expensiveButAcceptablePrice: string;
-  goodDealPrice: string;
-  tooCheapPrice: string;
   dreamFeature: string;
-  pricingModels: string[];
   sourcePath: string | null;
   sourceVendorSlug: string | null;
   context: SurveyContext;
@@ -195,15 +187,6 @@ function buildSurveyEmailText({
     "",
     "Réutilisation de Hada :",
     reuseIntent,
-    "",
-    "Sensibilité prix :",
-    `Trop cher à partir de : ${tooExpensivePrice}`,
-    `Cher mais encore acceptable à partir de : ${expensiveButAcceptablePrice}`,
-    `Bonne affaire en dessous de : ${goodDealPrice}`,
-    `Trop bon marché en dessous de : ${tooCheapPrice}`,
-    "",
-    "Modèle(s) de paiement préféré(s) :",
-    pricingModels.join(", "),
     "",
     "Feature rêvée :",
     dreamFeature || "Non renseigné",

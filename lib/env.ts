@@ -29,6 +29,8 @@ export const env = {
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
   firecrawlApiKey: firecrawlApiKeys[0] ?? "",
   firecrawlApiKeys,
+  googleApiKey: process.env.GOOGLE_API_KEY ?? "",
+  googleModel: process.env.GOOGLE_MODEL ?? "gemini-2.5-flash",
   mistralApiKey: process.env.MISTRAL_API_KEY ?? "",
   mistralModel: process.env.MISTRAL_MODEL ?? "mistral-medium-latest",
   resendApiKey: process.env.RESEND_API_KEY ?? "",

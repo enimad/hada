@@ -1,4 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { isBlockedWeddingDirectoryUrl } from "@/lib/blocked-vendor-sources";
+import { getBudgetAllocationForVendorCategory } from "@/lib/budget";
 import { buildWeddingSummary, formatBudgetSummary, type PlannerContext } from "@/lib/prompts";
 import type { ChatMessage, UiChatMessage, VendorCandidateView, VendorCategory, WeddingProfile } from "@/lib/types";
 import { searchVendorCatalog, type VendorCatalogEntry } from "@/lib/vendor-catalog";
@@ -39,12 +41,15 @@ export type SearchResultsOutcome = {
 type SearchOptions = {
   skipCache?: boolean;
   expandedOnly?: boolean;
+  trackQuota?: boolean;
 };
 
 const SEARCH_QUOTA_LIMIT = 2;
 const SEARCH_QUOTA_WINDOW_HOURS = 48;
 const SEARCH_QUOTA_WINDOW_MS = SEARCH_QUOTA_WINDOW_HOURS * 60 * 60 * 1000;
 const SEARCH_QUOTA_MARKER = { beta_search_quota: "v1" };
+const STRICT_VENDOR_SEARCH_TIMEOUT_MS = 18000;
+const EXPANDED_VENDOR_SEARCH_TIMEOUT_MS = 16000;
 
 export type SearchQuotaStatus = {
   limit: number;
@@ -192,7 +197,7 @@ export async function createSearchResultsForUser(
 ): Promise<SearchResultsOutcome> {
   const options = input.options ?? {};
   const requirements = {
-    ...SEARCH_QUOTA_MARKER,
+    ...(options.trackQuota === false ? {} : SEARCH_QUOTA_MARKER),
     summary: buildWeddingSummary(input.profile),
     query: input.search.searchQuery,
     category: input.search.category,
@@ -203,8 +208,9 @@ export async function createSearchResultsForUser(
   };
   const cachedCandidates = options.skipCache ? [] : await loadCachedCandidatesForUser(supabase, input.userId, input.search.category);
   const reusableCachedCandidates = filterReusableCachedCandidates(cachedCandidates, input.search, input.profile).slice(0, 3);
+  const hasSavedCandidatesForCategory = cachedCandidates.length > 0;
 
-  if (!options.skipCache && reusableCachedCandidates.length >= 3) {
+  if (!options.skipCache && !hasSavedCandidatesForCategory && reusableCachedCandidates.length >= 3) {
     const { data: request, error: requestError } = await supabase
       .from("vendor_requests")
       .insert({
@@ -245,27 +251,33 @@ export async function createSearchResultsForUser(
 
   const firecrawlCandidates = options.expandedOnly
     ? []
-    : await searchVendorsWithFirecrawl(supabase, {
-        userId: input.userId,
-        category: input.search.category,
-        query: input.search.searchQuery,
-        location: input.search.location,
-        profile: input.profile,
-        mode: "strict"
-      });
+    : await searchVendorsWithTimeBudget(
+        searchVendorsWithFirecrawl(supabase, {
+          userId: input.userId,
+          category: input.search.category,
+          query: input.search.searchQuery,
+          profile: input.profile,
+          mode: "strict"
+        }),
+        STRICT_VENDOR_SEARCH_TIMEOUT_MS,
+        "strict"
+      );
 
   let candidates = firecrawlCandidates.slice(0, 3);
   let mode: SearchResultsOutcome["mode"] = "strict";
 
   if (candidates.length === 0) {
-    const expandedCandidates = await searchVendorsWithFirecrawl(supabase, {
-      userId: input.userId,
-      category: input.search.category,
-      query: buildExpandedSearchQuery(input.search, input.profile),
-      location: input.search.location,
-      profile: input.profile,
-      mode: "expanded"
-    });
+    const expandedCandidates = await searchVendorsWithTimeBudget(
+      searchVendorsWithFirecrawl(supabase, {
+        userId: input.userId,
+        category: input.search.category,
+        query: buildExpandedSearchQuery(input.search, input.profile),
+        profile: input.profile,
+        mode: "expanded"
+      }),
+      EXPANDED_VENDOR_SEARCH_TIMEOUT_MS,
+      "expanded"
+    );
     candidates = expandedCandidates.slice(0, 3);
     mode = "expanded";
   }
@@ -299,7 +311,6 @@ export async function createSearchResultsForUser(
       candidates = [];
     }
 
-    const existingSlugs = await loadExistingCandidateSlugs(supabase, input.userId);
     const payload = usableNormalizedCandidates.map(({ candidate, normalized }) => {
       const vendorProfile = normalized.vendorProfile;
       const photos = vendorProfile.media.photos;
@@ -307,7 +318,6 @@ export async function createSearchResultsForUser(
       const email = vendorProfile.contact.email ?? candidate.email;
       const phone = vendorProfile.contact.phone ?? candidate.phone;
       const location = vendorProfile.identity.location_label || candidate.city || candidate.region;
-      const slug = buildUniqueCandidateSlug(vendorProfile.identity.name || candidate.name, existingSlugs);
 
       return {
         vendor_request_id: request.id,
@@ -323,7 +333,7 @@ export async function createSearchResultsForUser(
         summary: vendorProfile.summary.about ?? candidate.summary,
         source_url: candidate.sourceUrl,
         metadata_json: {
-          slug,
+          slug: slugify(vendorProfile.identity.name || candidate.name),
           vendor_profile: vendorProfile,
           raw_firecrawl: candidate,
           normalized_at: new Date().toISOString(),
@@ -378,6 +388,31 @@ export async function createSearchResultsForUser(
     mode: candidates.length > 0 ? mode : "external_fallback",
     externalSearchUrl: candidates.length > 0 ? undefined : buildExternalSearchUrl(input.search, input.profile)
   };
+}
+
+async function searchVendorsWithTimeBudget(
+  searchPromise: Promise<VendorCatalogEntry[]>,
+  timeoutMs: number,
+  mode: SearchResultsOutcome["mode"]
+) {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const safeSearchPromise = searchPromise.catch((error) => {
+    console.error("Vendor search failed", { mode, error: error instanceof Error ? error.message : "Unknown error" });
+    return [];
+  });
+
+  const timeoutPromise = new Promise<VendorCatalogEntry[]>((resolve) => {
+    timeoutId = setTimeout(() => {
+      console.warn("Vendor search exceeded time budget", { mode, timeoutMs });
+      resolve([]);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([safeSearchPromise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }
 
 export async function getSearchQuotaStatus(supabase: SupabaseClient, userId: string): Promise<SearchQuotaStatus> {
@@ -454,45 +489,47 @@ async function loadCachedCandidatesForUser(supabase: SupabaseClient, userId: str
     .order("score", { ascending: false })
     .limit(5);
 
-  return (candidates ?? []).map((candidate) => {
-    const metadata = candidate.metadata_json ?? {};
-    return {
-      id: candidate.id,
-      slug: metadata.slug ?? slugify(candidate.name),
-      name: candidate.name,
-      category: candidate.category as VendorCategory,
-      website: candidate.website,
-      email: candidate.email,
-      phone: candidate.phone,
-      address: metadata.address ?? null,
-      city: candidate.city,
-      region: candidate.region,
-      priceRange: candidate.price_range,
-      priceValue: estimatePriceValue(candidate.price_range),
-      guestCapacity: estimateGuestCapacity(metadata.capacity ?? null),
-      score: candidate.score ? Number(candidate.score) : null,
-      summary: candidate.summary,
-      sourceUrl: candidate.source_url,
-      image: metadata.image ?? null,
-      images: Array.isArray(metadata.images) ? metadata.images : [],
-      capacity: metadata.capacity ?? null,
-      vibe: metadata.vibe ?? null,
-      rating: metadata.rating ?? null,
-      reviewsCount: metadata.reviewsCount ?? null,
-      highlights: Array.isArray(metadata.highlights) ? metadata.highlights : [],
-      tags: Array.isArray(metadata.tags) ? metadata.tags : [],
-      match: metadata.match ?? null,
-      contactLead: metadata.contactLead ?? null,
-      sourceLabel: metadata.sourceLabel ?? "Cache Hada",
-      keywords: [],
-      limitations: Array.isArray(metadata.limitations) ? metadata.limitations : [],
-      reviewSearchUrl: metadata.reviewSearchUrl ?? null,
-      reviewSnippets: Array.isArray(metadata.reviewSnippets) ? metadata.reviewSnippets : [],
-      availability: metadata.availability ?? null,
-      specialties: metadata.specialties ?? null,
-      zoneIntervention: metadata.zoneIntervention ?? null
-    } satisfies VendorCatalogEntry;
-  });
+  return (candidates ?? [])
+    .filter((candidate) => !isBlockedWeddingDirectoryUrl(candidate.source_url) && !isBlockedWeddingDirectoryUrl(candidate.website))
+    .map((candidate) => {
+      const metadata = candidate.metadata_json ?? {};
+      return {
+        id: candidate.id,
+        slug: metadata.slug ?? slugify(candidate.name),
+        name: candidate.name,
+        category: candidate.category as VendorCategory,
+        website: candidate.website,
+        email: candidate.email,
+        phone: candidate.phone,
+        address: metadata.address ?? null,
+        city: candidate.city,
+        region: candidate.region,
+        priceRange: candidate.price_range,
+        priceValue: estimatePriceValue(candidate.price_range),
+        guestCapacity: estimateGuestCapacity(metadata.capacity ?? null),
+        score: candidate.score ? Number(candidate.score) : null,
+        summary: candidate.summary,
+        sourceUrl: candidate.source_url,
+        image: metadata.image ?? null,
+        images: Array.isArray(metadata.images) ? metadata.images : [],
+        capacity: metadata.capacity ?? null,
+        vibe: metadata.vibe ?? null,
+        rating: metadata.rating ?? null,
+        reviewsCount: metadata.reviewsCount ?? null,
+        highlights: Array.isArray(metadata.highlights) ? metadata.highlights : [],
+        tags: Array.isArray(metadata.tags) ? metadata.tags : [],
+        match: metadata.match ?? null,
+        contactLead: metadata.contactLead ?? null,
+        sourceLabel: metadata.sourceLabel ?? "Cache Hada",
+        keywords: [],
+        limitations: Array.isArray(metadata.limitations) ? metadata.limitations : [],
+        reviewSearchUrl: metadata.reviewSearchUrl ?? null,
+        reviewSnippets: Array.isArray(metadata.reviewSnippets) ? metadata.reviewSnippets : [],
+        availability: metadata.availability ?? null,
+        specialties: metadata.specialties ?? null,
+        zoneIntervention: metadata.zoneIntervention ?? null
+      } satisfies VendorCatalogEntry;
+    });
 }
 
 function filterReusableCachedCandidates(
@@ -506,6 +543,7 @@ function filterReusableCachedCandidates(
 
   return candidates
     .filter((candidate) => candidate.category === search.category)
+    .filter((candidate) => !isBlockedWeddingDirectoryUrl(candidate.sourceUrl) && !isBlockedWeddingDirectoryUrl(candidate.website))
     .filter((candidate) => (candidate.score ?? 0) >= 45)
     .filter((candidate) => hasUsableVendorData(candidate))
     .map((candidate) => ({
@@ -554,6 +592,7 @@ function computeCacheRelevance(
 }
 
 function hasUsableVendorData(candidate: VendorCatalogEntry) {
+  if (isBlockedWeddingDirectoryUrl(candidate.sourceUrl) || isBlockedWeddingDirectoryUrl(candidate.website)) return false;
   const hasContact = Boolean(candidate.website || candidate.email || candidate.phone);
   const hasContent = Boolean(candidate.summary || candidate.highlights?.length || candidate.specialties);
   return hasContact && hasContent;
@@ -857,10 +896,12 @@ export function normalizeSearchCategory(value: string | null | undefined): Vendo
 
   if (internalCategories[normalized]) return internalCategories[normalized];
 
-  if (/(lieu|domaine|chateau|salle|reception|venue)/.test(normalized)) return "venue";
-  if (/(traiteur|restauration|cocktail|diner|wedding cake|wedding_cake|gateau|patisserie)/.test(normalized)) return "caterer";
-  if (/(photographe|photo|photographer)/.test(normalized)) return "photographer";
-  if (/(videaste|video|film|videographer)/.test(normalized)) return "videographer";
+  if (/\b(lieu|lieux|domaine|chateau|salle|reception|venue|grange|ferme|mas|bastide|manoir|auberge|jardin|parc|etang|lac|rooftop|terrasse|orangerie)\b/.test(normalized)) {
+    return "venue";
+  }
+  if (/\b(traiteur|traiteurs|restauration|cocktail|diner|repas|wedding cake|wedding_cake|gateau|patisserie)\b/.test(normalized)) return "caterer";
+  if (/\b(photographe|photographes|photographer|photo|photos|photobooth|photomaton|borne photo|borne photos)\b/.test(normalized)) return "photographer";
+  if (/\b(videaste|videastes|video|videos|film|videographer|cameraman|cadreur|realisation|realisateur)\b/.test(normalized)) return "videographer";
   if (/(dj|disc jockey|mix|platines)/.test(normalized)) return "dj";
   if (/(groupe|chanteur|chanteuse|chante|jazz|acoustique|piano|guitariste|violoniste|contrebasse|quartet|trio|duo musical|orchestre|musique live|live|musicien|musique)/.test(normalized)) {
     return "musician";
@@ -882,7 +923,8 @@ export function buildContactDraft(candidate: VendorCandidateView, profile: Parti
       : "Nous";
   const place = profile?.city ?? profile?.region ?? "lieu à confirmer";
   const guests = profile?.guest_count ? `${profile.guest_count} invités` : "nombre d'invités à confirmer";
-  const budget = formatBudgetSummary(profile) ?? "budget à confirmer";
+  const vendorBudget = getBudgetAllocationForVendorCategory(profile, candidate.category);
+  const budget = vendorBudget?.hint ?? formatBudgetSummary(profile) ?? "budget à confirmer";
   const subject = `Demande d'information – Mariage le ${weddingDate} à ${place}`;
   const intro = `${names} organisons notre mariage le ${weddingDate} à ${place}.`;
   const categoryLine = contactOpeningByCategory(candidate.category);
@@ -920,46 +962,6 @@ function slugify(value: string | null | undefined) {
     .replace(/^-+|-+$/g, "");
 
   return slug || "prestataire";
-}
-
-async function loadExistingCandidateSlugs(supabase: SupabaseClient, userId: string) {
-  const { data: requests } = await supabase
-    .from("vendor_requests")
-    .select("id")
-    .eq("user_id", userId)
-    .limit(200);
-
-  const requestIds = (requests ?? []).map((request) => request.id).filter(isString);
-  if (requestIds.length === 0) return new Set<string>();
-
-  const { data: candidates } = await supabase
-    .from("vendor_candidates")
-    .select("name, metadata_json")
-    .in("vendor_request_id", requestIds)
-    .limit(500);
-
-  return new Set(
-    (candidates ?? [])
-      .map((candidate) => {
-        const metadata = (candidate.metadata_json ?? {}) as Record<string, unknown>;
-        return readOptionalString(metadata.slug) ?? slugify(candidate.name);
-      })
-      .filter(isString)
-  );
-}
-
-function buildUniqueCandidateSlug(name: string | null | undefined, usedSlugs: Set<string>) {
-  const base = slugify(name);
-  let slug = base;
-  let suffix = 2;
-
-  while (usedSlugs.has(slug)) {
-    slug = `${base}-${suffix}`;
-    suffix += 1;
-  }
-
-  usedSlugs.add(slug);
-  return slug;
 }
 
 function estimatePriceValue(priceRange: string | null | undefined) {

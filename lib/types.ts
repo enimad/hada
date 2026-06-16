@@ -14,9 +14,25 @@ export type WeddingProfile = {
   style: string | null;
   ceremony_type: string | null;
   notes: string | null;
+  wedding_checklist: WeddingChecklistItem[] | null;
+  wedding_budget_overrides: Record<string, number> | null;
   profile_completion_score: number | null;
   created_at: string;
   updated_at: string;
+};
+
+export type WeddingChecklistItem = {
+  id: string;
+  phase: string;
+  title: string;
+  description: string;
+  dueOffsetMonths: number;
+  done: boolean;
+};
+
+export type WeddingChecklistPatch = {
+  completed_item_ids?: string[];
+  reopened_item_ids?: string[];
 };
 
 export type ChatMessage = {

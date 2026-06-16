@@ -9,7 +9,7 @@ import { SurveyModalHost } from "@/components/survey-exit-guard";
 
 type AppShellProps = {
   children: ReactNode;
-  active: "chat" | "wedding" | "vendors";
+  active: "chat" | "wedding" | "budget" | "offer" | "vendors";
   mobileTitle?: string;
   mobileTitleNode?: ReactNode;
   mobileRightSlot?: ReactNode;
@@ -18,7 +18,9 @@ type AppShellProps = {
 const navItems = [
   { key: "chat", label: "Chat avec Hada", href: "/chat" },
   { key: "wedding", label: "Mon mariage", href: "/monmariage" },
-  { key: "vendors", label: "Mes prestataires", href: "/vendors" }
+  { key: "budget", label: "Budget", href: "/budget" },
+  { key: "vendors", label: "Mes prestataires", href: "/vendors" },
+  { key: "offer", label: "Mon offre", href: "/mon-offre", variant: "subscription" }
 ] as const;
 
 const feedbackFormUrl = "https://docs.google.com/forms/d/e/1FAIpQLSdSLTUfwxa179tPHL00z3bUYZxRc9VNPPFqelqQLLComRF0Bw/viewform";
@@ -44,25 +46,32 @@ export function AppShell({ children, active, mobileTitle = "Hada", mobileTitleNo
             <div className="flex w-11 justify-end">{mobileRightSlot ?? <span className="w-11" />}</div>
           </div>
 
-          <div className="mx-auto hidden w-full max-w-6xl items-center justify-between px-6 py-4 lg:px-8 md:flex">
-            <Link href="/chat" className="flex items-center gap-3">
-              <HadaWordmark className="max-w-[108px] lg:max-w-[118px]" />
-              <span className="rounded-full bg-[#fff0f1] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--hada-coral)]">
+          <div className="mx-auto hidden w-full max-w-[1680px] items-center justify-between gap-4 px-5 py-3 lg:px-7 md:flex">
+            <Link href="/chat" className="flex shrink-0 items-center gap-2.5">
+              <HadaWordmark className="!w-[104px] !max-w-[104px] lg:!w-[112px] lg:!max-w-[112px]" />
+              <span className="rounded-full bg-[#fff0f1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--hada-coral)]">
                 Beta
               </span>
             </Link>
 
-            <div className="flex items-center gap-3">
-              <nav className="flex items-center gap-3 rounded-full border border-[#eadfda] bg-white/80 p-2 shadow-[0_8px_30px_rgba(46,28,54,0.06)]">
+            <div className="flex min-w-0 flex-1 items-center justify-end gap-2.5">
+              <nav className="flex min-w-max shrink-0 items-center gap-1.5 rounded-full border border-[#eadfda] bg-white/80 p-1.5 shadow-[0_8px_30px_rgba(46,28,54,0.06)] lg:gap-2">
                 {navItems.map((item) => {
                   const isActive = item.key === active;
+                  const isSubscription = "variant" in item && item.variant === "subscription";
 
                   return (
                     <Link
                       key={item.key}
                       href={item.href}
-                      className={`rounded-full px-5 py-3 text-[15px] font-semibold tracking-[-0.02em] transition ${
-                        isActive ? "bg-[var(--hada-coral)] text-white" : "text-[var(--hada-navy)] hover:bg-[#fff0f1]"
+                      className={`inline-flex h-12 shrink-0 items-center justify-center whitespace-nowrap rounded-full px-3.5 text-center text-[14px] font-semibold leading-none tracking-[-0.02em] transition lg:px-4 xl:px-5 ${
+                        isSubscription
+                          ? isActive
+                            ? "bg-[var(--hada-navy)] text-white shadow-[0_10px_24px_rgba(43,33,79,0.16)]"
+                            : "border border-[#ffd4d8] bg-[#fff7f4] text-[var(--hada-coral)] hover:border-[var(--hada-coral)] hover:bg-[#fff0f1]"
+                          : isActive
+                            ? "bg-[var(--hada-coral)] text-white"
+                            : "text-[var(--hada-navy)] hover:bg-[#fff0f1]"
                       }`}
                     >
                       {item.label}
@@ -75,16 +84,16 @@ export function AppShell({ children, active, mobileTitle = "Hada", mobileTitleNo
                 href={feedbackFormUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex h-[54px] items-center justify-center rounded-full bg-[#fff0f1] px-5 text-[14px] font-semibold tracking-[-0.02em] text-[var(--hada-coral)] shadow-[0_8px_26px_rgba(251,105,116,0.12)] transition hover:-translate-y-0.5 hover:bg-[var(--hada-coral)] hover:text-white lg:px-6"
+                className="inline-flex h-12 shrink-0 items-center justify-center rounded-full bg-[#fff0f1] px-4 text-[13px] font-semibold leading-none tracking-[-0.02em] text-[var(--hada-coral)] shadow-[0_8px_26px_rgba(251,105,116,0.12)] transition hover:-translate-y-0.5 hover:bg-[var(--hada-coral)] hover:text-white xl:px-5"
               >
-                Donner mon avis sur Hada
+                Donner mon avis
               </a>
 
               <Link
                 href="/logout"
                 aria-label="Se déconnecter"
                 title="Se déconnecter"
-                className="inline-flex h-[54px] w-[54px] items-center justify-center rounded-full border border-[#eadfda] bg-[#fff0f1] text-[var(--hada-coral)] shadow-[0_8px_26px_rgba(251,105,116,0.12)] transition hover:-translate-y-0.5 hover:bg-[var(--hada-coral)] hover:text-white"
+                className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-[#eadfda] bg-[#fff0f1] text-[var(--hada-coral)] shadow-[0_8px_26px_rgba(251,105,116,0.12)] transition hover:-translate-y-0.5 hover:bg-[var(--hada-coral)] hover:text-white"
               >
                 <LogoutIcon className="h-5 w-5" />
               </Link>
