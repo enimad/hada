@@ -1,16 +1,29 @@
-export const decapConfig = `backend:
+type DecapConfigOptions = {
+  localBackend?: boolean;
+  siteUrl?: string;
+};
+
+export function buildDecapConfig({ localBackend = false, siteUrl = "https://hadawedding.fr" }: DecapConfigOptions = {}) {
+  const backend = localBackend
+    ? `local_backend: true
+
+backend:
+  name: git-gateway`
+    : `backend:
   name: github
   repo: enimad/hada
   branch: main
   base_url: /api/decap
-  auth_endpoint: auth
+  auth_endpoint: auth`;
+  const publishMode = localBackend ? "" : "publish_mode: editorial_workflow\n";
+
+  return `${backend}
 
 locale: fr
-site_url: https://hadawedding.fr
-display_url: https://hadawedding.fr
+site_url: ${siteUrl}
+display_url: ${siteUrl}
 logo_url: /brand/hada-wordmark.png
-publish_mode: editorial_workflow
-media_folder: public/uploads/blog
+${publishMode}media_folder: public/uploads/blog
 public_folder: /uploads/blog
 
 collections:
@@ -37,3 +50,6 @@ collections:
       - { label: Lien vidéo optionnel, name: videoUrl, widget: string, required: false, hint: "Coller ici un lien YouTube, Vimeo, Loom ou Google Drive. Ne pas uploader de vidéo lourde dans Git." }
       - { label: Contenu, name: body, widget: markdown }
 `;
+}
+
+export const decapConfig = buildDecapConfig();

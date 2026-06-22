@@ -2,7 +2,29 @@
 
 ## Objectif
 
-Decap CMS est disponible sur `/admin`. L'interface est visible, mais seule une personne connectée avec un compte GitHub autorisé sur `enimad/hada` peut publier.
+Decap CMS est disponible sur `/admin`.
+
+- En local, `npm run dev` lance Next.js et le proxy Decap officiel. Aucun identifiant GitHub n'est nécessaire et les articles sont écrits directement dans `content/blog`.
+- En production, seule une personne connectée avec un compte GitHub autorisé sur `enimad/hada` peut publier.
+
+## Utilisation locale
+
+Lancer :
+
+```powershell
+npm run dev
+```
+
+Le même terminal démarre :
+
+- Hada sur `http://localhost:3000` ;
+- le proxy Decap local sur `http://localhost:8081`.
+
+Ouvrir ensuite `http://localhost:3000/admin`. Le mode local utilise `git-gateway` avec `local_backend: true` et ne demande pas de connexion GitHub.
+
+`Ctrl+C` dans ce terminal arrête les deux services.
+
+Le workflow éditorial Decap n'est pas disponible avec le proxy local. Il reste activé en production.
 
 ## Variables Vercel nécessaires
 

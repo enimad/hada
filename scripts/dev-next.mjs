@@ -1,4 +1,5 @@
 import { startServer } from "next/dist/server/lib/start-server.js";
+import { spawn } from "node:child_process";
 import { access, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -7,8 +8,9 @@ process.env.NEXT_TELEMETRY_DISABLED ??= "1";
 
 const port = Number(process.env.PORT ?? 3000);
 const hostname = process.env.HOSTNAME ?? "localhost";
+const projectDir = process.cwd();
 
-const nextDir = join(process.cwd(), ".next");
+const nextDir = join(projectDir, ".next");
 const devLayoutCss = join(nextDir, "static", "css", "app", "layout.css");
 const requiredDevArtifacts = [
   join(nextDir, "routes-manifest.json"),
@@ -51,10 +53,38 @@ try {
   } catch {}
 }
 
+const decapEntry = join(projectDir, "node_modules", "decap-server", "dist", "index.js");
+const decapProxy = spawn(process.execPath, [decapEntry], {
+  cwd: projectDir,
+  env: {
+    ...process.env,
+    PORT: "8081",
+    BIND_HOST: "localhost",
+    ORIGIN: `http://localhost:${port}`
+  },
+  stdio: "inherit"
+});
+
+decapProxy.on("error", (error) => {
+  console.warn(`[decap] Proxy local indisponible: ${error.message}`);
+});
+
+decapProxy.on("exit", (code) => {
+  if (code && code !== 0) {
+    console.warn(`[decap] Le proxy local s'est arrêté avec le code ${code}.`);
+  }
+});
+
+process.once("exit", () => {
+  if (decapProxy.exitCode === null) {
+    decapProxy.kill();
+  }
+});
+
 await startServer({
-  dir: process.cwd(),
+  dir: projectDir,
   isDev: true,
   hostname,
   port,
-  allowRetry: false,
+  allowRetry: false
 });

@@ -49,6 +49,8 @@ npm run build
 
 Note: aucun lint automatisable n'est configure pour le moment. L'ancien `next lint` a ete retire car il est deprecie et ouvrait une configuration interactive.
 
+En développement, `npm run dev` lance aussi le proxy Decap local sur le port `8081`. `/admin` fonctionne alors sans OAuth GitHub et écrit directement dans `content/blog`. En production, Decap utilise les variables OAuth GitHub ci-dessous.
+
 ## Variables d'environnement
 
 Copier `.env.example` vers `.env.local`.
