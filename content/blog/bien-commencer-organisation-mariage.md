@@ -1,20 +1,23 @@
 ---
 draft: false
-title: "Comment bien commencer l'organisation de son mariage"
-slug: "bien-commencer-organisation-mariage"
-description: "Les premières décisions à poser pour organiser son mariage sans se disperser : vision, budget, invités, lieu et prestataires prioritaires."
-category: "Organisation"
-publishedAt: "2026-06-11T08:00:00.000+02:00"
-updatedAt: "2026-06-11T08:00:00.000+02:00"
-heroImage: "/brand/hada-portrait-rays.png"
-heroAlt: "Hada aide un couple à organiser son mariage"
-excerpt: "Avant de chercher tous les prestataires à la fois, mieux vaut poser quelques bases solides. Voici l'ordre simple qui aide à avancer sereinement."
-seoTitle: "Comment bien commencer l'organisation de son mariage | Hada"
-seoDescription: "Découvrez les premières étapes essentielles pour organiser votre mariage : vision, budget, invités, lieu et prestataires prioritaires."
+title: Comment bien commencer l'organisation de son mariage
+slug: bien-commencer-organisation-mariage
+description: "Les premières décisions à poser pour organiser son mariage sans se
+  disperser : vision, budget, invités, lieu et prestataires prioritaires."
+category: Organisation
+publishedAt: 2026-06-11T08:00:00.000+02:00
+updatedAt: 23/06/2026T01:52
+heroImage: /brand/hada-portrait-rays.png
+heroAlt: Hada aide un couple à organiser son mariage
+excerpt: Avant de chercher tous les prestataires à la fois, mieux vaut poser
+  quelques bases solides. Voici l'ordre simple qui aide à avancer sereinement.
+seoTitle: Comment bien commencer l'organisation de son mariage | Hada
+seoDescription: "Découvrez les premières étapes essentielles pour organiser
+  votre mariage : vision, budget, invités, lieu et prestataires prioritaires."
 videoUrl: ""
 ---
 
-Commencer l'organisation d'un mariage peut vite donner l'impression qu'il faut tout décider en même temps. En réalité, les premières étapes servent surtout à créer un cadre clair.
+ALORS ! Commencer l'organisation d'un mariage peut vite donner l'impression qu'il faut tout décider en même temps. En réalité, les premières étapes servent surtout à créer un cadre clair.
 
 ## 1. Définir la vision générale
 

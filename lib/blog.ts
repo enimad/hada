@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import matter from "gray-matter";
 
 export type BlogPost = {
   title: string;
@@ -21,7 +22,7 @@ export type BlogPost = {
 
 const blogDirectory = path.join(process.cwd(), "content", "blog");
 
-type Frontmatter = Record<string, string | boolean | undefined>;
+type Frontmatter = Record<string, unknown>;
 
 export function getAllBlogPosts() {
   if (!fs.existsSync(blogDirectory)) {
@@ -32,6 +33,7 @@ export function getAllBlogPosts() {
     .readdirSync(blogDirectory)
     .filter((fileName) => fileName.endsWith(".md") || fileName.endsWith(".mdx"))
     .map((fileName) => readBlogPost(fileName))
+    .filter((post): post is BlogPost => Boolean(post))
     .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
 }
 
@@ -52,83 +54,69 @@ export function getBlogCategories(posts: BlogPost[]) {
   return Array.from(new Set(posts.map((post) => post.category).filter(Boolean)));
 }
 
-function readBlogPost(fileName: string): BlogPost {
-  const raw = fs.readFileSync(path.join(blogDirectory, fileName), "utf8");
-  const { data, body } = parseFrontmatter(raw);
-  const fallbackSlug = fileName.replace(/\.(md|mdx)$/i, "");
-  const title = stringValue(data.title, "Guide mariage Hada");
-  const description = stringValue(data.description, stringValue(data.excerpt, ""));
-  const publishedAt = stringValue(data.publishedAt, new Date(0).toISOString());
-  const excerpt = stringValue(data.excerpt, description);
-  const seoTitle = stringValue(data.seoTitle, title);
-  const seoDescription = stringValue(data.seoDescription, description);
+function readBlogPost(fileName: string): BlogPost | null {
+  try {
+    const raw = fs.readFileSync(path.join(blogDirectory, fileName), "utf8");
+    const parsed = matter(raw);
+    const data = parsed.data as Frontmatter;
+    const body = parsed.content.trim();
+    const fallbackSlug = fileName.replace(/\.(md|mdx)$/i, "");
+    const title = stringValue(data.title, "Guide mariage Hada");
+    const description = stringValue(data.description, stringValue(data.excerpt, ""));
+    const publishedAt = normalizeDateValue(data.publishedAt, new Date(0).toISOString());
+    const excerpt = stringValue(data.excerpt, description);
+    const seoTitle = stringValue(data.seoTitle, title);
+    const seoDescription = stringValue(data.seoDescription, description);
 
-  return {
-    title,
-    slug: stringValue(data.slug, fallbackSlug),
-    description,
-    category: stringValue(data.category, "Organisation"),
-    publishedAt,
-    updatedAt: stringValue(data.updatedAt, ""),
-    heroImage: stringValue(data.heroImage, "/brand/hada-portrait-circle.png"),
-    heroAlt: stringValue(data.heroAlt, title),
-    excerpt,
-    seoTitle,
-    seoDescription,
-    draft: booleanValue(data.draft, false),
-    videoUrl: stringValue(data.videoUrl, ""),
-    body: body.trim(),
-    readingTime: estimateReadingTime(body)
-  };
+    return {
+      title,
+      slug: stringValue(data.slug, fallbackSlug),
+      description,
+      category: stringValue(data.category, "Organisation"),
+      publishedAt,
+      updatedAt: normalizeDateValue(data.updatedAt, ""),
+      heroImage: stringValue(data.heroImage, "/brand/hada-portrait-circle.png"),
+      heroAlt: stringValue(data.heroAlt, title),
+      excerpt,
+      seoTitle,
+      seoDescription,
+      draft: booleanValue(data.draft, false),
+      videoUrl: stringValue(data.videoUrl, ""),
+      body,
+      readingTime: estimateReadingTime(body)
+    };
+  } catch (error) {
+    console.error(`[blog] Impossible de lire ${fileName}`, error);
+    return null;
+  }
 }
 
-function parseFrontmatter(raw: string): { data: Frontmatter; body: string } {
-  if (!raw.startsWith("---")) {
-    return { data: {}, body: raw };
-  }
-
-  const end = raw.indexOf("\n---", 3);
-  if (end === -1) {
-    return { data: {}, body: raw };
-  }
-
-  const frontmatter = raw.slice(3, end).trim();
-  const body = raw.slice(end + 4).trim();
-  const data: Frontmatter = {};
-
-  for (const line of frontmatter.split(/\r?\n/)) {
-    const separatorIndex = line.indexOf(":");
-    if (separatorIndex === -1) continue;
-
-    const key = line.slice(0, separatorIndex).trim();
-    const rawValue = line.slice(separatorIndex + 1).trim();
-    if (!key) continue;
-
-    data[key] = parseFrontmatterValue(rawValue);
-  }
-
-  return { data, body };
-}
-
-function parseFrontmatterValue(value: string) {
-  if (value === "true") return true;
-  if (value === "false") return false;
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1);
-  }
-
-  return value;
-}
-
-function stringValue(value: string | boolean | undefined, fallback: string) {
+function stringValue(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function booleanValue(value: string | boolean | undefined, fallback: boolean) {
+function booleanValue(value: unknown, fallback: boolean) {
   if (typeof value === "boolean") return value;
   if (value === "true") return true;
   if (value === "false") return false;
   return fallback;
+}
+
+function normalizeDateValue(value: unknown, fallback: string) {
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value.toISOString();
+  }
+
+  const raw = stringValue(value, "");
+  if (!raw) return fallback;
+
+  const frenchDate = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+  const normalized = frenchDate
+    ? `${frenchDate[3]}-${frenchDate[2]}-${frenchDate[1]}T${frenchDate[4] ?? "00"}:${frenchDate[5] ?? "00"}:${frenchDate[6] ?? "00"}`
+    : raw;
+  const parsed = new Date(normalized);
+
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : fallback;
 }
 
 function estimateReadingTime(content: string) {

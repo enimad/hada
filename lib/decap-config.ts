@@ -40,8 +40,8 @@ collections:
       - { label: Slug URL, name: slug, widget: string, hint: "Exemple : comment-choisir-son-lieu-de-mariage" }
       - { label: Description courte, name: description, widget: text, hint: "Résumé visible en haut de l'article." }
       - { label: Catégorie, name: category, widget: select, options: ["Organisation", "Budget", "Prestataires", "Lieu de réception", "Inspiration", "Planning"] }
-      - { label: Date de publication, name: publishedAt, widget: datetime, date_format: "DD/MM/YYYY", time_format: "HH:mm", picker_utc: false }
-      - { label: Date de mise à jour, name: updatedAt, widget: datetime, required: false, date_format: "DD/MM/YYYY", time_format: "HH:mm", picker_utc: false }
+      - { label: Date de publication, name: publishedAt, widget: datetime, format: "YYYY-MM-DDTHH:mm:ss.SSSZ", date_format: "YYYY-MM-DD", time_format: "HH:mm", picker_utc: false }
+      - { label: Date de mise à jour, name: updatedAt, widget: datetime, required: false, format: "YYYY-MM-DDTHH:mm:ss.SSSZ", date_format: "YYYY-MM-DD", time_format: "HH:mm", picker_utc: false }
       - { label: Image principale, name: heroImage, widget: image }
       - { label: Texte alternatif image, name: heroAlt, widget: string }
       - { label: Extrait carte blog, name: excerpt, widget: text }

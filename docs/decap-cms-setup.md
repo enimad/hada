@@ -26,6 +26,8 @@ Ouvrir ensuite `http://localhost:3000/admin`. Le mode local utilise `git-gateway
 
 Le workflow éditorial Decap n'est pas disponible avec le proxy local. Il reste activé en production.
 
+En local, enregistrer ou publier dans Decap modifie directement `content/blog` et `public/uploads/blog`, mais ne crée pas de commit Git. Ces fichiers doivent être commités puis poussés pour apparaître sur le site déployé.
+
 ## Variables Vercel nécessaires
 
 Créer une OAuth App GitHub, puis ajouter dans Vercel :
