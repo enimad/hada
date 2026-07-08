@@ -3,27 +3,33 @@ import { getBudgetAllocationForVendorCategory } from "@/lib/budget";
 import { env, validateServerEnv } from "@/lib/env";
 import { buildWeddingSummary } from "@/lib/prompts";
 import {
+  buildRetrySearchPayload,
   buildSearchCta,
   createSearchResultsForUser,
+  getMostRecentRetryableSearch,
   getVendorCategoryLabel,
   insertConversationMessage,
   listConversationMessages,
-  normalizeSearchCategory,
   type SearchReadyPayload
 } from "@/lib/server/hada";
 import { getAuthenticatedUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { applyWeddingChecklistPatch, normalizeWeddingChecklist } from "@/lib/wedding-checklist";
-import type { ChatMessage, UiChatMessage, VendorCategory, WeddingChecklistPatch, WeddingProfile } from "@/lib/types";
+import type { UiChatMessage, VendorCategory, WeddingChecklistPatch, WeddingProfile } from "@/lib/types";
 import {
-  applyChatV2DecisionGuards,
-  buildHadaDecisionPrompt,
+  applyExecutionGate,
+  buildHadaTurnPrompt,
   buildHadaVisibleReplyPrompt,
   decisionToIntentClassification,
   heuristicClassificationV2,
+  isAffirmativeReply,
+  isNegativeReply,
+  normalizeSearchBrief,
   parseHadaDecisionResponse,
-  type ChatV2Intent,
+  SUPPORTED_CATEGORY_LABELS,
   type IntentClassification,
+  type PendingProposalSnapshot,
+  type PendingSearchSnapshot,
   type ProfileUpdatePatch,
   type VendorSearchBrief
 } from "@/lib/server/chat-v2/contracts";
@@ -34,7 +40,7 @@ type AiChatMessage = {
 };
 
 type AiProvider = "google" | "mistral";
-type AiTask = "intent" | "reply" | "search_announcement";
+type AiTask = "turn" | "reply" | "search_announcement";
 
 type PendingV2Search = {
   messageId: string;
@@ -42,6 +48,13 @@ type PendingV2Search = {
   brief: VendorSearchBrief;
   initialMessage: string;
   turns: number;
+};
+
+type PendingV2SearchProposal = {
+  messageId: string;
+  metadata: Record<string, unknown>;
+  brief: VendorSearchBrief;
+  initialMessage: string | null;
 };
 
 type PendingV2ProfileUpdate = {
@@ -52,6 +65,15 @@ type PendingV2ProfileUpdate = {
   searchBrief: VendorSearchBrief | null;
   initialMessage: string | null;
 };
+
+type ChatV2FallbackContext = {
+  supabase: ReturnType<typeof createSupabaseServerClient>;
+  conversationId: string;
+};
+
+// Vercel : la recherche prestataire (SERP + scrapes 20 s + relance étendue) peut
+// dépasser le timeout par défaut des fonctions serverless.
+export const maxDuration = 60;
 
 const CHAT_V2_STATUS = "chat_v2_active";
 const GOOGLE_MIN_REQUEST_INTERVAL_MS = 450;
@@ -87,18 +109,22 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  let fallbackContext: ChatV2FallbackContext | null = null;
+
   try {
     validateServerEnv();
     const { user, error: authError } = await getAuthenticatedUser(request);
     if (!user) return NextResponse.json({ error: authError }, { status: 401 });
 
     const body = await request.json();
-    const content = typeof body.content === "string" ? body.content.trim() : "";
+    const isRetrySearch = body.action === "retry_search";
+    const content = isRetrySearch ? "Relance la recherche avec des critères élargis." : typeof body.content === "string" ? body.content.trim() : "";
     if (!content) return NextResponse.json({ error: "Missing content" }, { status: 400 });
 
     const supabase = createSupabaseServerClient();
     const { data: profile } = await supabase.from("wedding_profiles").select("*").eq("user_id", user.id).maybeSingle();
     const conversation = await ensureChatV2Conversation(supabase, user.id, profile);
+    fallbackContext = { supabase, conversationId: conversation.id };
 
     await insertConversationMessage(supabase, {
       conversationId: conversation.id,
@@ -118,37 +144,86 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const messages = await listConversationMessages(supabase, conversation.id);
-    const pendingSearch = await getPendingV2Search(supabase, conversation.id);
-    const contextResolution = resolveContextualUserText(content, messages);
-    const decisionText = contextResolution.decisionText;
-    const classification = applyDeterministicIntentGuards(
-      await classifyIntentV2({
-        userText: decisionText,
+    if (isRetrySearch) {
+      const retrySearch = await getMostRecentRetryableSearch(supabase, user.id);
+      if (!retrySearch) {
+        const assistantMessage = await insertConversationMessage(supabase, {
+          conversationId: conversation.id,
+          role: "assistant",
+          content: "Je n'ai pas retrouvé de recherche à relancer. Dites-moi simplement le type de prestataire souhaité, et je repars proprement."
+        });
+
+        return jsonChatResponse(conversation.id, assistantMessage, 0);
+      }
+
+      return performVendorSearchV2({
+        supabase,
+        userId: user.id,
+        conversationId: conversation.id,
         profile,
+        brief: normalizeSearchBrief(buildRetrySearchPayload(retrySearch, profile)),
+        userText: content,
+        searchOptions: {
+          skipCache: true,
+          expandedOnly: true,
+          trackQuota: false
+        },
+        finalFallback: true
+      });
+    }
+
+    const messages = await listConversationMessages(supabase, conversation.id);
+    const storedPendingSearch = await getPendingV2Search(supabase, conversation.id);
+    const storedPendingProposal = await getPendingV2SearchProposal(supabase, conversation.id);
+    const pendingSearchSnapshot: PendingSearchSnapshot = storedPendingSearch
+      ? { brief: storedPendingSearch.brief, initialMessage: storedPendingSearch.initialMessage, turns: storedPendingSearch.turns }
+      : null;
+    const pendingProposalSnapshot: PendingProposalSnapshot = storedPendingProposal
+      ? { brief: storedPendingProposal.brief, initialMessage: storedPendingProposal.initialMessage }
+      : null;
+
+    const classification = applyExecutionGate(
+      await classifyTurnV2({
+        userText: content,
         messages,
-        pendingSearch
+        profile,
+        pendingSearch: pendingSearchSnapshot,
+        pendingProposal: pendingProposalSnapshot
       }),
       {
-        userText: decisionText,
-        pendingSearch
+        userText: content,
+        pendingSearch: pendingSearchSnapshot,
+        pendingProposal: pendingProposalSnapshot
       }
     );
 
-    if (pendingSearch && classification.intent !== "vendor_search" && classification.intent !== "vendor_search_details") {
-      await clearPendingV2Search(supabase, pendingSearch);
+    const isSearchFamilyIntent =
+      classification.intent === "search_request" || classification.intent === "search_detail" || classification.intent === "confirm";
+
+    // Clôture des états : une collecte ne se ferme que sur refus explicite.
+    // Un tour advice/chat au milieu d'une collecte (question de conseil, digression)
+    // ne la détruit pas : le couple peut répondre aux critères juste après.
+    if (storedPendingSearch && classification.intent === "deny") {
+      await clearPendingV2Search(supabase, storedPendingSearch);
+    }
+    if (storedPendingProposal && (isSearchFamilyIntent || classification.intent === "deny" || classification.proposeSearch)) {
+      await clearPendingV2SearchProposal(supabase, storedPendingProposal);
     }
 
-    const profilePatchFromSearch = classification.vendorSearch?.category
-      ? detectProfilePatchFromSearchLocation(profile, classification.vendorSearch)
+    // Brief effectif : proposition/collecte en attente enrichie par ce que le LLM a extrait du tour.
+    const activeBrief = classification.intent === "search_detail"
+      ? (storedPendingSearch?.brief ?? storedPendingProposal?.brief ?? null)
+      : (storedPendingProposal?.brief ?? storedPendingSearch?.brief ?? null);
+    const mergedBrief = isSearchFamilyIntent ? mergeSearchBriefs(activeBrief, classification.vendorSearch) : classification.vendorSearch;
+
+    const profilePatchFromSearch = isSearchFamilyIntent && mergedBrief?.category
+      ? detectProfilePatchFromSearchLocation(profile, mergedBrief)
       : null;
     const profilePatch = mergeProfileUpdatePatches(classification.profilePatch, profilePatchFromSearch);
 
-    if (profilePatch && classification.intent !== "off_topic" && classification.intent !== "unclear") {
+    if (profilePatch && classification.intent !== "unclear") {
       const summary = buildProfileUpdateSummary(profile, profilePatch) ?? classification.profileSummary ?? "des informations de votre mariage changent";
-      const searchBrief = classification.intent === "vendor_search" || classification.intent === "vendor_search_details"
-        ? classification.vendorSearch
-        : pendingSearch?.brief ?? null;
+      const searchBrief = isSearchFamilyIntent ? mergedBrief : null;
       const visible = await generateVisibleMessage({
         task: "reply",
         systemPrompt: buildChatV2VisibleReplyPrompt(),
@@ -181,25 +256,57 @@ export async function POST(request: NextRequest) {
       return jsonChatResponse(conversation.id, assistantMessage, 0);
     }
 
-    if (classification.intent === "vendor_search" || classification.intent === "vendor_search_details") {
+    if (isSearchFamilyIntent && mergedBrief) {
       return handleVendorSearchV2({
         supabase,
         userId: user.id,
         conversationId: conversation.id,
         profile,
-        userText: decisionText,
-        classification,
-        pendingSearch
+        userText: content,
+        brief: mergedBrief,
+        pendingSearch: storedPendingSearch,
+        initialMessage: storedPendingSearch?.initialMessage ?? storedPendingProposal?.initialMessage ?? null
       });
     }
 
-    const reply = await generateAdviceOrRedirect({
-      userText: decisionText,
-      profile,
-      messages,
-      classification,
-      contextNote: contextResolution.contextNote
-    });
+    if (classification.proposeSearch) {
+      const proposalBrief = mergeSearchBriefs(storedPendingProposal?.brief ?? null, classification.vendorSearch);
+      const reply = usableDecisionReply(classification.reply) ?? buildSearchProposalFallback(proposalBrief);
+      const assistantMessage = await insertConversationMessage(supabase, {
+        conversationId: conversation.id,
+        role: "assistant",
+        content: reply,
+        metadata: {
+          chatV2PendingSearchProposal: {
+            status: "proposed",
+            brief: proposalBrief,
+            initialMessage: content
+          }
+        }
+      });
+
+      return jsonChatResponse(conversation.id, assistantMessage, 0);
+    }
+
+    if (classification.intent === "deny") {
+      const reply =
+        usableDecisionReply(classification.reply) ??
+        "D'accord, on laisse ça de côté pour l'instant. Dites-moi ce que vous voulez faire avancer pour votre mariage.";
+      const assistantMessage = await insertConversationMessage(supabase, {
+        conversationId: conversation.id,
+        role: "assistant",
+        content: reply
+      });
+
+      return jsonChatResponse(conversation.id, assistantMessage, 0);
+    }
+
+    // advice / chat / unclear : la réponse du tour vient du même appel LLM.
+    const reply =
+      usableDecisionReply(classification.reply) ??
+      (await generateAdviceReplyFallback({ userText: content, profile, messages, classification })) ??
+      buildUnsupportedCategoryReply(classification) ??
+      buildChatV2ReplyFallback(content, Boolean(storedPendingSearch));
 
     const assistantMessage = await insertConversationMessage(supabase, {
       conversationId: conversation.id,
@@ -209,7 +316,35 @@ export async function POST(request: NextRequest) {
 
     return jsonChatResponse(conversation.id, assistantMessage, 0);
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Unknown error" }, { status: 500 });
+    console.error("Chat V2 POST failed", error);
+    const recoveredResponse = await createChatV2FallbackResponse(fallbackContext, error);
+    if (recoveredResponse) return recoveredResponse;
+    return NextResponse.json({ error: "chat_v2_unavailable" }, { status: 500 });
+  }
+}
+
+async function createChatV2FallbackResponse(context: ChatV2FallbackContext | null, error: unknown) {
+  if (!context) return null;
+
+  try {
+    const assistantMessage = await insertConversationMessage(context.supabase, {
+      conversationId: context.conversationId,
+      role: "assistant",
+      content:
+        "Je n'ai pas pu finaliser ma réponse correctement, mais je garde le fil. Dites-moi en une phrase ce que vous voulez faire avancer, et je reprends proprement.",
+      metadata: {
+        chatV2Fallback: {
+          status: "server_recovered",
+          at: new Date().toISOString(),
+          reason: error instanceof Error ? error.name : "unknown_error"
+        }
+      }
+    });
+
+    return jsonChatResponse(context.conversationId, assistantMessage, 0);
+  } catch (fallbackError) {
+    console.error("Chat V2 fallback response failed", fallbackError);
+    return null;
   }
 }
 
@@ -219,20 +354,18 @@ async function handleVendorSearchV2(input: {
   conversationId: string;
   profile: Partial<WeddingProfile> | null;
   userText: string;
-  classification: IntentClassification;
+  brief: VendorSearchBrief;
   pendingSearch: PendingV2Search | null;
+  initialMessage?: string | null;
 }) {
-  const mergedBrief = normalizeSearchBrief({
-    ...input.pendingSearch?.brief,
-    ...input.classification.vendorSearch
-  });
   const turns = input.pendingSearch ? input.pendingSearch.turns + 1 : 0;
-  const missing = findMissingSearchFields(mergedBrief, input.profile, turns);
+  const initialMessage = input.initialMessage ?? input.pendingSearch?.initialMessage ?? input.userText;
+  const missing = findMissingSearchFields(input.brief, input.profile, turns);
 
   if (missing.length > 0) {
     const question = await generateSearchClarificationQuestion({
       profile: input.profile,
-      brief: mergedBrief,
+      brief: input.brief,
       missing
     });
 
@@ -245,8 +378,8 @@ async function handleVendorSearchV2(input: {
       metadata: {
         chatV2PendingSearch: {
           status: "collecting",
-          brief: mergedBrief,
-          initialMessage: input.pendingSearch?.initialMessage ?? input.userText,
+          brief: input.brief,
+          initialMessage,
           turns
         }
       }
@@ -262,8 +395,8 @@ async function handleVendorSearchV2(input: {
     userId: input.userId,
     conversationId: input.conversationId,
     profile: input.profile,
-    brief: mergedBrief,
-    userText: [input.pendingSearch?.initialMessage, input.userText].filter(Boolean).join(" ")
+    brief: input.brief,
+    userText: [initialMessage !== input.userText ? initialMessage : null, input.userText].filter(Boolean).join(" ")
   });
 }
 
@@ -276,17 +409,56 @@ async function performVendorSearchV2(input: {
   userText: string;
   introMessage?: string | null;
   extraMetadata?: Record<string, unknown> | null;
+  searchOptions?: {
+    skipCache?: boolean;
+    expandedOnly?: boolean;
+    trackQuota?: boolean;
+  } | null;
+  finalFallback?: boolean;
 }) {
   const search = buildSearchReadyPayload(input.brief, input.profile, input.userText);
-  const searchResults = await createSearchResultsForUser(input.supabase, {
-    userId: input.userId,
-    conversationId: input.conversationId,
-    profile: input.profile,
-    search,
-    options: {
-      trackQuota: false
-    }
-  });
+  let searchResults: Awaited<ReturnType<typeof createSearchResultsForUser>>;
+  try {
+    searchResults = await createSearchResultsForUser(input.supabase, {
+      userId: input.userId,
+      conversationId: input.conversationId,
+      profile: input.profile,
+      search,
+      options: {
+        trackQuota: false,
+        ...(input.searchOptions ?? {})
+      }
+    });
+  } catch (error) {
+    console.error("Chat V2 vendor search failed", {
+      category: search.category,
+      error: error instanceof Error ? error.message : "Unknown error"
+    });
+
+    const categoryLabel = getVendorCategoryLabel(search.category, 2);
+    const assistantMessage = await insertConversationMessage(input.supabase, {
+      conversationId: input.conversationId,
+      role: "assistant",
+      content: [
+        input.introMessage,
+        `La recherche de ${categoryLabel} a été interrompue avant de produire des fiches fiables. Je garde la demande en tête : vous pouvez relancer une recherche élargie, ou préciser un style, un lieu ou une contrainte pour repartir plus finement.`
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      metadata: {
+        ...(input.extraMetadata ?? {}),
+        ...buildSearchRecoveryCta(),
+        // La demande reste ouverte : le prochain critère du couple relance la recherche.
+        ...buildPostFailureCollectMetadata(input.brief, input.userText),
+        chatV2SearchError: {
+          category: search.category,
+          at: new Date().toISOString()
+        }
+      }
+    });
+
+    return jsonChatResponse(input.conversationId, assistantMessage, 0);
+  }
 
   const hasResults = searchResults.candidates.length > 0;
   const categoryLabel = getVendorCategoryLabel(search.category, searchResults.candidates.length || 2);
@@ -296,14 +468,15 @@ async function performVendorSearchV2(input: {
     maxTokens: 190,
     temperature: 0.45,
     instruction: [
-      "Rédige un message court et chaleureux pour annoncer le résultat d'une recherche de prestataires.",
+      "Écris directement le message final affiché au couple pour annoncer le résultat d'une recherche de prestataires. Tu es Hada et tu parles à la première personne.",
+      "INTERDIT : préambule ou mise en scène (« Voici un petit mot... »), guillemets autour du message, mention ou description d'un bouton, didascalie entre parenthèses, prénoms du couple en en-tête.",
       "Ne cite aucun nom de prestataire.",
       "Ne mentionne jamais Firecrawl, scraping, Supabase, Mistral, Google, API, quota ou backend.",
       `Profil : ${buildWeddingSummary(input.profile)}`,
       `Type de prestataire : ${categoryLabel}`,
       `Nombre de fiches fiables créées : ${searchResults.candidates.length}`,
       hasResults
-        ? "Dis que les fiches sont prêtes et invite à les consulter via le bouton."
+        ? "Dis que les fiches sont prêtes à consulter juste en dessous (un bouton s'affiche automatiquement sous ton message, ne le décris pas)."
         : "Dis que Hada n'a pas encore assez d'éléments fiables et invite à ajuster la demande."
     ].join("\n")
   });
@@ -313,7 +486,15 @@ async function performVendorSearchV2(input: {
     .join("\n\n");
   const metadata = {
     ...(input.extraMetadata ?? {}),
-    ...(hasResults ? buildSearchCta(search.category) : {})
+    ...(hasResults
+      ? buildSearchCta(search.category)
+      : {
+          ...buildSearchRecoveryCta(searchResults.externalSearchUrl, input.finalFallback === true),
+          // Sans résultat, Hada pose une question d'affinage : la collecte doit être
+          // réellement ouverte côté serveur pour que la réponse du couple
+          // (« plutôt naturel », « budget 2000 € »...) relance la recherche.
+          ...buildPostFailureCollectMetadata(input.brief, input.userText)
+        })
   };
   const assistantMessage = await insertConversationMessage(input.supabase, {
     conversationId: input.conversationId,
@@ -428,54 +609,23 @@ async function ensureChatV2Conversation(
 
 function buildChatV2Welcome(profile: Partial<WeddingProfile> | null) {
   return [
-    "Bienvenue dans le chat V2 de Hada.",
-    `Je repars sur une logique plus claire : conseils mariage, mise à jour de votre profil, ou recherche de prestataires quand la demande est explicite. ${buildWeddingSummary(profile)}`
+    "Bienvenue, je suis Hada, votre wedding planner.",
+    `Je peux vous conseiller, mettre à jour votre profil mariage, et chercher des prestataires dès que vous me le demandez — ou vous le proposer quand je sens que c'est le moment. ${buildWeddingSummary(profile)}`
   ].join("\n\n");
 }
 
-function resolveContextualUserText(userText: string, messages: UiChatMessage[]) {
-  if (!isContextualRetryMessage(userText)) {
-    return {
-      decisionText: userText,
-      contextNote: null
-    };
-  }
-
-  const previousMessages = messages.slice(0, -1);
-  const lastBeforeCurrent = previousMessages[previousMessages.length - 1];
-  if (lastBeforeCurrent?.role !== "user" || !isSubstantiveUserMessage(lastBeforeCurrent.content)) {
-    return {
-      decisionText: userText,
-      contextNote: null
-    };
-  }
-
-  return {
-    decisionText: lastBeforeCurrent.content,
-    contextNote: `Le dernier message du couple était seulement "${userText}". Il s'agit d'une relance après une réponse absente ou interrompue. Reprends la demande précédente sans faire comme si le couple avait changé de sujet.`
-  };
-}
-
-function isContextualRetryMessage(value: string) {
-  const normalized = normalizeForIntent(value);
-  return /^(?:\?+|hein|allo|reponds|tu es la|tu as bugue|ca a bugue|oula|et donc|alors)\??$/.test(normalized);
-}
-
-function isSubstantiveUserMessage(value: string) {
-  const normalized = normalizeForIntent(value);
-  return normalized.length >= 12 && !isContextualRetryMessage(value);
-}
-
-async function classifyIntentV2(input: {
+async function classifyTurnV2(input: {
   userText: string;
-  profile: Partial<WeddingProfile> | null;
   messages: UiChatMessage[];
-  pendingSearch: PendingV2Search | null;
+  profile: Partial<WeddingProfile> | null;
+  pendingSearch: PendingSearchSnapshot;
+  pendingProposal: PendingProposalSnapshot;
 }): Promise<IntentClassification> {
-  const prompt = buildHadaDecisionPrompt({
-    profile: input.profile,
+  const prompt = buildHadaTurnPrompt({
+    profileSummary: buildWeddingSummary(input.profile),
     messages: input.messages,
-    pendingSearch: input.pendingSearch
+    pendingSearch: input.pendingSearch,
+    pendingProposal: input.pendingProposal
   });
   const decision = await generateStructuredHadaDecision({
     systemPrompt: prompt,
@@ -485,16 +635,17 @@ async function classifyIntentV2(input: {
   return decision
     ? decisionToIntentClassification(decision, {
         userText: input.userText,
-        pendingSearch: input.pendingSearch
+        pendingSearch: input.pendingSearch,
+        pendingProposal: input.pendingProposal
       })
-    : heuristicClassificationV2(input.userText, input.pendingSearch);
+    : heuristicClassificationV2(input.userText, input.pendingSearch, input.pendingProposal);
 }
 
 async function generateStructuredHadaDecision(input: {
   systemPrompt: string;
   instruction: string;
 }) {
-  const providers = getProviderOrderForTask("intent");
+  const providers = getProviderOrderForTask("turn");
   for (const provider of providers) {
     try {
       const result = await fetchModelContent({
@@ -503,9 +654,10 @@ async function generateStructuredHadaDecision(input: {
           { role: "system", content: input.systemPrompt },
           { role: "user", content: input.instruction }
         ],
-        maxTokens: 900,
-        temperature: 0.05,
-        timeoutMs: 6200
+        maxTokens: 700,
+        temperature: 0.2,
+        timeoutMs: 9000,
+        jsonMode: true
       });
       const decision = parseHadaDecisionResponse(result);
       if (decision) return decision;
@@ -520,84 +672,93 @@ async function generateStructuredHadaDecision(input: {
   return null;
 }
 
-function buildIntentClassifierPrompt(profile: Partial<WeddingProfile> | null, messages: UiChatMessage[], pendingSearch: PendingV2Search | null) {
-  return buildHadaDecisionPrompt({ profile, messages, pendingSearch });
-}
-
-function applyDeterministicIntentGuards(classification: IntentClassification, input: { userText: string; pendingSearch: PendingV2Search | null }): IntentClassification {
-  return applyChatV2DecisionGuards(classification, input);
-}
-
-function parseIntentClassification(value: string | null): IntentClassification | null {
-  if (!value) return null;
-  const match = value.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-
-  try {
-    const raw = JSON.parse(match[0]) as Record<string, unknown>;
-    const intent = normalizeIntent(raw.intent);
-    const vendor = raw.vendor_search && typeof raw.vendor_search === "object" ? (raw.vendor_search as Record<string, unknown>) : null;
-    return {
-      intent,
-      confidence: readNumber(raw.confidence) ?? 0,
-      explicitVendorSearch: raw.explicit_vendor_search === true,
-      profilePatch: parseProfilePatch(raw.profile_patch),
-      profileSummary: readString(raw.profile_summary),
-      vendorSearch: vendor
-        ? normalizeSearchBrief({
-            category: normalizeSearchCategory(readString(vendor.category)),
-            location: readString(vendor.location),
-            style: readString(vendor.style),
-            constraints: readString(vendor.constraints),
-            budget: readString(vendor.budget),
-            guestCount: readNumber(vendor.guest_count),
-            searchQuery: readString(vendor.search_query)
-          })
-        : null,
-      answerGuidance: readString(raw.answer_guidance)
-    };
-  } catch {
-    return null;
-  }
-}
-
-function heuristicClassification(userText: string, pendingSearch: PendingV2Search | null): IntentClassification {
-  return heuristicClassificationV2(userText, pendingSearch);
-}
-
-async function generateAdviceOrRedirect(input: {
+/**
+ * Voie de secours quand le LLM n'a pas fourni de reply exploitable dans la décision
+ * (JSON tronqué, ou classification heuristique). Contrairement à l'ancienne version,
+ * l'historique récent est transmis au modèle.
+ */
+async function generateAdviceReplyFallback(input: {
   userText: string;
   profile: Partial<WeddingProfile> | null;
   messages: UiChatMessage[];
   classification: IntentClassification;
-  contextNote?: string | null;
 }) {
-  const reply = await generateVisibleMessage({
+  const recent = input.messages
+    .slice(-8)
+    .map((message) => `${message.role === "user" ? "Couple" : "Hada"}: ${message.content.replace(/\s+/g, " ").slice(0, 300)}`)
+    .join("\n");
+
+  return generateVisibleMessage({
     task: "reply",
     systemPrompt: buildChatV2VisibleReplyPrompt(),
     maxTokens: 260,
     temperature: 0.45,
     instruction: [
-      "Réponds au dernier message du couple.",
+      "Réponds au dernier message du couple en tenant compte de l'historique.",
       "Si le message est hors sujet, réponds brièvement puis ramène doucement vers le mariage.",
       "Si le message est ambigu ou très faible, demande ce que le couple veut faire avancer pour le mariage.",
       "Si c'est une question mariage, réponds utilement sans lancer de recherche prestataire.",
+      "Si le couple demande si Hada est une IA ou une vraie personne, réponds clairement que Hada est une assistante IA pensée pour accompagner l'organisation du mariage, sans prétendre être une personne humaine réelle.",
+      "Si l'intention serveur est advice, réponds en conseil/méthode/critères sans dire qu'une recherche est lancée.",
       "Ne mentionne jamais de JSON, d'intention, de modèle ou d'outil.",
       `Profil : ${buildWeddingSummary(input.profile)}`,
       `Intention serveur : ${input.classification.intent}`,
-      `Guidance : ${input.classification.answerGuidance ?? "aucune"}`,
-      input.contextNote ? `Contexte de relance : ${input.contextNote}` : null,
+      `Historique récent :\n${recent || "Aucun."}`,
       `Dernier message : ${input.userText}`
-    ]
-      .filter(Boolean)
-      .join("\n")
+    ].join("\n")
   });
-
-  return reply ?? "Je vous suis. Dites-moi ce que vous voulez faire avancer pour votre mariage, et je vous guide pas à pas.";
 }
 
 function buildChatV2VisibleReplyPrompt() {
   return buildHadaVisibleReplyPrompt();
+}
+
+function buildChatV2ReplyFallback(userText: string, hasOpenSearch = false) {
+  if (isAssistantIdentityQuestion(userText)) {
+    return "Je suis Hada, une assistante IA pensée pour vous accompagner dans l'organisation de votre mariage. Je ne suis pas une personne humaine réelle, mais je peux vous aider à clarifier vos choix, structurer vos étapes et lancer des recherches quand vous me le demandez clairement.";
+  }
+
+  if (hasOpenSearch) {
+    return "Bien noté. Donnez-moi un critère de plus — un style, un budget, une zone ou une contrainte — et je relance la recherche aussitôt.";
+  }
+
+  return "Je vous suis. Dites-moi ce que vous voulez faire avancer pour votre mariage, et je vous guide pas à pas.";
+}
+
+function buildUnsupportedCategoryReply(classification: IntentClassification) {
+  if (classification.reason !== "unsupported_category" || !classification.unsupportedCategoryLabel) return null;
+  return [
+    `Je ne peux pas encore chercher de ${classification.unsupportedCategoryLabel} pour vous : mes recherches couvrent aujourd'hui ${SUPPORTED_CATEGORY_LABELS}.`,
+    "Le plus efficace : demandez des recommandations à votre lieu de réception ou votre photographe, ils travaillent souvent avec des partenaires de confiance."
+  ].join(" ");
+}
+
+/** Après un échec de recherche, la demande reste ouverte comme collecte : le prochain critère relance. */
+function buildPostFailureCollectMetadata(brief: VendorSearchBrief, initialMessage: string) {
+  return {
+    chatV2PendingSearch: {
+      status: "collecting",
+      brief,
+      initialMessage,
+      turns: 0
+    }
+  };
+}
+
+function buildSearchProposalFallback(brief: VendorSearchBrief) {
+  const label = brief.category ? getVendorCategoryLabel(brief.category, 2) : "prestataires";
+  const where = brief.location ? ` autour de ${brief.location}` : "";
+  return `Je peux m'en occuper : voulez-vous que je lance une recherche de ${label}${where} ? Répondez simplement oui et je démarre.`;
+}
+
+function isAssistantIdentityQuestion(value: string) {
+  const normalized = normalizeForIntent(value);
+  if (!normalized) return false;
+  const asksAboutAssistant = /\b(tu es|vous etes|es tu|etes vous|hada est|c est)\b/.test(normalized);
+  const mentionsIdentity = /\b(ia|intelligence artificielle|bot|robot|vraie personne|vrai humain|vraie humaine|humain|humaine|personne reelle|personne reel)\b/.test(
+    normalized
+  );
+  return asksAboutAssistant && mentionsIdentity;
 }
 
 async function generateSearchClarificationQuestion(input: {
@@ -636,6 +797,18 @@ function findMissingSearchFields(brief: VendorSearchBrief, profile: Partial<Wedd
   return missing;
 }
 
+function mergeSearchBriefs(base: VendorSearchBrief | null | undefined, extra: VendorSearchBrief | null | undefined): VendorSearchBrief {
+  return normalizeSearchBrief({
+    category: extra?.category ?? base?.category ?? null,
+    location: extra?.location ?? base?.location ?? null,
+    style: extra?.style ?? base?.style ?? null,
+    constraints: extra?.constraints ?? base?.constraints ?? null,
+    budget: extra?.budget ?? base?.budget ?? null,
+    guestCount: extra?.guestCount ?? base?.guestCount ?? null,
+    searchQuery: extra?.searchQuery ?? base?.searchQuery ?? null
+  });
+}
+
 function buildSearchReadyPayload(brief: VendorSearchBrief, profile: Partial<WeddingProfile> | null, userText: string): SearchReadyPayload {
   const category = brief.category ?? "venue";
   const location = brief.location ?? profile?.city ?? profile?.region ?? profile?.country ?? "France";
@@ -647,8 +820,8 @@ function buildSearchReadyPayload(brief: VendorSearchBrief, profile: Partial<Wedd
     location,
     style,
     constraints,
-    budget,
-    raw: brief.searchQuery ?? userText
+    curated: brief.searchQuery,
+    raw: userText
   });
 
   return {
@@ -661,78 +834,37 @@ function buildSearchReadyPayload(brief: VendorSearchBrief, profile: Partial<Wedd
   };
 }
 
+/**
+ * Construit la requête web envoyée à la recherche prestataire.
+ * Priorité à la requête optimisée rédigée par le LLM (search_query) ;
+ * sinon composition à partir des champs structurés. La phrase brute du couple
+ * n'est utilisée qu'en dernier recours (elle pollue la recherche web).
+ */
 function ensureSearchQuery(input: {
   category: VendorCategory;
   location: string | null;
   style: string | null;
   constraints: string | null;
-  budget: string | null;
+  curated: string | null;
   raw: string;
 }) {
-  const base = [categoryToSearchLabel(input.category), "mariage", input.location, input.style, input.constraints, input.budget, input.raw]
+  if (input.curated) {
+    const withMariage = /\bmariage\b/i.test(input.curated) ? input.curated : `${input.curated} mariage`;
+    return withMariage.replace(/\s+/g, " ").trim().slice(0, 180);
+  }
+
+  const hasStructuredDetails = Boolean(input.style || input.constraints);
+  const base = [
+    categoryToSearchLabel(input.category),
+    "mariage",
+    input.location,
+    input.style,
+    input.constraints,
+    hasStructuredDetails ? null : input.raw
+  ]
     .filter(Boolean)
     .join(" ");
   return base.replace(/\s+/g, " ").trim().slice(0, 180);
-}
-
-function normalizeSearchBrief(value: Partial<VendorSearchBrief> | null | undefined): VendorSearchBrief {
-  return {
-    category: value?.category ? normalizeSearchCategory(value.category) : null,
-    location: cleanNullableString(value?.location),
-    style: cleanNullableString(value?.style),
-    constraints: cleanNullableString(value?.constraints),
-    budget: cleanNullableString(value?.budget),
-    guestCount: typeof value?.guestCount === "number" && Number.isFinite(value.guestCount) ? value.guestCount : null,
-    searchQuery: cleanNullableString(value?.searchQuery)
-  };
-}
-
-function extractSearchDetails(userText: string): Partial<VendorSearchBrief> {
-  const normalized = normalizeForIntent(userText);
-  const styleMatches = normalized.match(
-    /\b(moderne|classique|traditionnel|italien|vegetarien|vegan|chic|simple|elegant|boheme|romantique|festif|luxe|champetre|rustique|intimiste|convivial|editorial|historique|nature|vue|etang|lac|jardin|terrasse|rooftop)\b/g
-  );
-  const budget = userText.match(/\b\d{3,6}\s*(?:€|eur|euros?)\b/i)?.[0] ?? null;
-  const guestCount = userText.match(/\b(\d{1,4})\s*(?:invites|invités|personnes|convives)\b/i)?.[1];
-  const location = extractRequestedLocation(userText);
-
-  return {
-    category: normalizeSearchCategory(userText),
-    location,
-    style: styleMatches ? Array.from(new Set(styleMatches)).slice(0, 5).join(", ") : null,
-    constraints: extractConstraintText(userText),
-    budget,
-    guestCount: guestCount ? Number(guestCount) : null
-  };
-}
-
-function extractConstraintText(value: string) {
-  const compact = value.replace(/\s+/g, " ").trim();
-  const patterns = [
-    /\b(?:avec|qui a|qui ait|si possible|idealement|idéalement)\s+([^.!?]{3,90})/i,
-    /\b(?:sans)\s+([^.!?]{3,80})/i,
-    /\b(?:pour)\s+(\d{1,4}\s*(?:invites|invités|personnes|convives))/i
-  ];
-
-  for (const pattern of patterns) {
-    const match = compact.match(pattern);
-    if (match?.[1]) return match[1].trim();
-  }
-
-  if (/\b(peu importe|pas de preference|pas de préférence|aucune preference|aucune préférence|surprends moi)\b/i.test(compact)) {
-    return "pas de préférence particulière";
-  }
-
-  return null;
-}
-
-function extractRequestedLocation(userText: string) {
-  const match = userText.match(/\b(?:a|à|en|dans|autour de|pres de|près de|vers)\s+([^,.!?;\n]{3,60})/i);
-  const raw = match?.[1]
-    ?.split(/\b(?:avec|pour|si|mais|style|ambiance|budget|qui|et)\b/i)[0]
-    ?.trim();
-  if (!raw || raw.split(/\s+/).length > 6) return null;
-  return formatDisplayLocation(raw);
 }
 
 function detectProfilePatchFromSearchLocation(profile: Partial<WeddingProfile> | null, brief: VendorSearchBrief): ProfileUpdatePatch | null {
@@ -788,6 +920,51 @@ async function clearPendingV2Search(supabase: ReturnType<typeof createSupabaseSe
         chatV2PendingSearch: {
           ...((pending.metadata.chatV2PendingSearch as Record<string, unknown> | undefined) ?? {}),
           status: "completed"
+        }
+      }
+    })
+    .eq("id", pending.messageId);
+}
+
+async function getPendingV2SearchProposal(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  conversationId: string
+): Promise<PendingV2SearchProposal | null> {
+  const { data } = await supabase
+    .from("messages")
+    .select("id, metadata_json")
+    .eq("conversation_id", conversationId)
+    .eq("role", "assistant")
+    .order("created_at", { ascending: false })
+    .limit(12);
+
+  for (const message of data ?? []) {
+    const metadata = (message.metadata_json ?? {}) as Record<string, unknown>;
+    const pending = metadata.chatV2PendingSearchProposal;
+    if (!pending || typeof pending !== "object") continue;
+    const value = pending as Record<string, unknown>;
+    if (value.status !== "proposed") continue;
+
+    return {
+      messageId: message.id,
+      metadata,
+      brief: normalizeSearchBrief(value.brief as Partial<VendorSearchBrief> | null),
+      initialMessage: readString(value.initialMessage)
+    };
+  }
+
+  return null;
+}
+
+async function clearPendingV2SearchProposal(supabase: ReturnType<typeof createSupabaseServerClient>, pending: PendingV2SearchProposal) {
+  await supabase
+    .from("messages")
+    .update({
+      metadata_json: {
+        ...pending.metadata,
+        chatV2PendingSearchProposal: {
+          ...((pending.metadata.chatV2PendingSearchProposal as Record<string, unknown> | undefined) ?? {}),
+          status: "resolved"
         }
       }
     })
@@ -995,10 +1172,10 @@ async function generateVisibleMessage(input: {
         ],
         maxTokens: input.maxTokens,
         temperature: input.temperature,
-        timeoutMs: input.task === "intent" ? 5200 : 7000
+        timeoutMs: 7000
       });
-      const normalizedResult = input.task === "intent" ? result : sanitizeVisibleModelText(result);
-      if (input.task === "intent" ? Boolean(normalizedResult) : isUsableVisibleModelText(normalizedResult)) return normalizedResult;
+      const normalizedResult = sanitizeAnnouncementText(sanitizeVisibleModelText(result));
+      if (isUsableVisibleModelText(normalizedResult)) return normalizedResult;
     } catch (error) {
       console.warn("Chat V2 model call failed", {
         provider,
@@ -1011,8 +1188,19 @@ async function generateVisibleMessage(input: {
 }
 
 function getProviderOrderForTask(task: AiTask): AiProvider[] {
-  const preferred: AiProvider[] = ["google", "mistral"];
+  const configured = parseProviderOrder(process.env.HADA_AI_PROVIDER_ORDER);
+  const preferred: AiProvider[] = configured ?? (task === "turn" ? ["mistral", "google"] : ["google", "mistral"]);
   return preferred.filter((provider) => (provider === "google" ? Boolean(env.googleApiKey) : Boolean(env.mistralApiKey)));
+}
+
+function parseProviderOrder(value: string | undefined): AiProvider[] | null {
+  const providers = (value ?? "")
+    .split(/[,;|\s]+/)
+    .map((item) => item.trim().toLowerCase())
+    .filter((item): item is AiProvider => item === "google" || item === "mistral");
+
+  const uniqueProviders = Array.from(new Set(providers));
+  return uniqueProviders.length > 0 ? uniqueProviders : null;
 }
 
 function sanitizeVisibleModelText(value: string | null) {
@@ -1034,12 +1222,43 @@ function isUsableVisibleModelText(value: string | null) {
   return true;
 }
 
+/**
+ * Nettoie les fuites de mise en scène du modèle dans un message visible :
+ * préambule (« Voici un petit mot pour X : »), guillemets encadrant tout le
+ * message, didascalies type (Bouton : "...").
+ */
+function sanitizeAnnouncementText(value: string | null) {
+  if (!value) return null;
+  let text = value.trim();
+  text = text.replace(/^(voici|voilà)\s+(un|le|votre)\s+(petit\s+)?(mot|message|texte|récap|recap)[^:\n]{0,80}:\s*/i, "");
+  text = text.replace(/\(\s*bouton[^)]*\)\s*/gi, "").trim();
+  // Guillemets encadrant tout le message, avec éventuelle traîne courte après le
+  // guillemet fermant (emoji, ponctuation). On ne dé-guillemette pas si le contenu
+  // interne contient lui-même ce type de guillemet (citations légitimes).
+  const wrapped = text.match(/^([«"“'])\s*([\s\S]+?)\s*([»"”'])\s*([^\w«"“'»”]{0,8})$/);
+  if (wrapped && !wrapped[2].includes(wrapped[1]) && !wrapped[2].includes(wrapped[3])) {
+    text = `${wrapped[2].trim()}${wrapped[4] ? ` ${wrapped[4].trim()}` : ""}`.trim();
+  }
+  return text || null;
+}
+
+/** Validation allégée pour la reply issue de la décision : elle peut être courte (« Avec plaisir ! »). */
+function usableDecisionReply(value: string | null) {
+  const sanitized = sanitizeAnnouncementText(sanitizeVisibleModelText(value));
+  if (!sanitized) return null;
+  if (sanitized.length < 2) return null;
+  if (/^\{/.test(sanitized)) return null;
+  if (/"intent"\s*:|"reply"\s*:|"tool_calls"\s*:|"propose_search"\s*:/.test(sanitized)) return null;
+  return sanitized;
+}
+
 async function fetchModelContent(input: {
   provider: AiProvider;
   messages: AiChatMessage[];
   maxTokens: number;
   temperature: number;
   timeoutMs: number;
+  jsonMode?: boolean;
 }) {
   if (input.provider === "google") return fetchGoogleGenerateContent(input);
   return fetchMistralChatContent(input);
@@ -1050,6 +1269,7 @@ async function fetchMistralChatContent(input: {
   maxTokens: number;
   temperature: number;
   timeoutMs: number;
+  jsonMode?: boolean;
 }) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await waitForMistralRequestSlot();
@@ -1067,6 +1287,7 @@ async function fetchMistralChatContent(input: {
           model: env.mistralModel,
           temperature: input.temperature,
           max_tokens: Math.max(input.maxTokens, 64),
+          ...(input.jsonMode ? { response_format: { type: "json_object" } } : {}),
           messages: input.messages
         }),
         signal: controller.signal
@@ -1093,6 +1314,7 @@ async function fetchGoogleGenerateContent(input: {
   maxTokens: number;
   temperature: number;
   timeoutMs: number;
+  jsonMode?: boolean;
 }) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await waitForGoogleRequestSlot();
@@ -1131,6 +1353,7 @@ function buildGoogleGenerateContentBody(input: {
   messages: AiChatMessage[];
   maxTokens: number;
   temperature: number;
+  jsonMode?: boolean;
 }) {
   const systemPrompt = input.messages.find((message) => message.role === "system")?.content ?? "";
   const contents = input.messages
@@ -1148,6 +1371,7 @@ function buildGoogleGenerateContentBody(input: {
     generationConfig: {
       temperature: input.temperature,
       maxOutputTokens: Math.max(input.maxTokens, 64),
+      ...(input.jsonMode ? { responseMimeType: "application/json" } : {}),
       thinkingConfig: {
         thinkingBudget: 0
       }
@@ -1235,84 +1459,15 @@ function buildSearchAnnouncementFallback(categoryLabel: string, hasResults: bool
     : `Je n'ai pas encore assez d'éléments fiables pour créer des fiches ${categoryLabel}. Donnez-moi un peu plus de précision et je relance proprement.`;
 }
 
-function normalizeIntent(value: unknown): ChatV2Intent {
-  const intent = readString(value);
-  const allowed: ChatV2Intent[] = ["wedding_chat", "profile_update", "vendor_search", "vendor_search_details", "off_topic", "unclear"];
-  return allowed.includes(intent as ChatV2Intent) ? (intent as ChatV2Intent) : "unclear";
-}
-
-function hasExplicitSearchIntent(value: string) {
-  const normalized = normalizeForIntent(value);
-  if (!normalized || isNonSearchInquiry(value)) return false;
-  const hasSearchVerb =
-    /\b(cherche|chercher|recherche|rechercher|trouve|trouver|deniche|denicher|selectionne|selectionner|propose|proposer|recommande|recommander|liste|lister)\b/.test(
-      normalized
-    );
-  const hasNeedPhrase =
-    /\b(j ai besoin|on a besoin|nous avons besoin|il me faut|il nous faut|je veux|on veut|nous voulons|je voudrais|on voudrait|nous voudrions)\b/.test(
-      normalized
-    );
-  const hasCategory = Boolean(normalizeSearchCategory(value));
-  const hasVendorObject = /\b(prestataire|prestataires|option|options|adresse|adresses|contact|contacts|pepite|pepites)\b/.test(normalized);
-  return hasSearchVerb || (hasNeedPhrase && (hasCategory || hasVendorObject));
-}
-
-function isVendorAdviceDiscussion(value: string) {
-  const normalized = normalizeForIntent(value);
-  if (!normalized) return false;
-
-  const hasVendorContext =
-    Boolean(normalizeSearchCategory(value)) || /\b(prestataire|prestataires|photobooth|photo booth|wedding planner)\b/.test(normalized);
-  if (!hasVendorContext) return false;
-
-  const hasAdviceIntent =
-    /\b(conseil|conseils|conseille|conseillez|avis|aide moi a choisir|aidez moi a choisir|aide a choisir|comment choisir|comment comparer|comparer|comparaison|difference|differences|critere|criteres|utile|necessaire|obligatoire|important|priorite|prioritaire|budget moyen|prix moyen|combien ca coute|faut il|dois je|doit on|parle moi|parler|discuter|explique|c est quoi|qu est ce que|tu connais|connais tu)\b/.test(
-      normalized
-    ) ||
-    /\b(tu me recommandes quoi|vous me recommandez quoi|que me recommandes tu|que recommandez vous|quoi choisir)\b/.test(normalized);
-
-  if (!hasAdviceIntent) return false;
-
-  const asksForConcreteResults =
-    /\b(cherche|chercher|recherche|rechercher|trouve|trouver|deniche|denicher|selectionne|selectionner|liste|lister|shortlist|fiche|fiches|adresse|adresses|contact|contacts)\b/.test(
-      normalized
-    ) ||
-    (/\b(propose|proposer|recommande|recommander)\b/.test(normalized) &&
-      !/\b(quoi|comment|avis|conseil|conseils|type|types|critere|criteres)\b/.test(normalized));
-
-  return !asksForConcreteResults;
-}
-
-function isNonSearchInquiry(value: string) {
-  const normalized = normalizeForIntent(value);
-  if (/\bpourquoi pas\b/.test(normalized)) return false;
-  return /\b(c est quoi|c quoi|qu est ce que|ca veut dire quoi|definition|definis|explique|comment ca marche|comment fonctionne|tu connais|connais tu|vous connaissez|avis|conseil|conseils|conseille|conseillez|comment choisir|comment comparer|aide moi a choisir|aidez moi a choisir|aide a choisir|pourquoi|combien ca coute|budget moyen|prix moyen|a quoi ca sert|faut il|dois je|doit on|parle moi|parler|discuter|tu me recommandes quoi|vous me recommandez quoi|que me recommandes tu|que recommandez vous|quoi choisir)\b/.test(
-    normalized
-  );
-}
-
-function isLowSignalMessage(value: string) {
-  const normalized = normalizeForIntent(value);
-  if (!normalized) return true;
-  if (normalizeSearchCategory(value)) return false;
-  if (new Set(["test", "essai", "asdf", "azerty", "qwerty", "blabla", "blah", "ok test"]).has(normalized)) return true;
-  const compact = normalized.replace(/\s+/g, "");
-  if (compact.length >= 6 && !/[aeiouy]/.test(compact)) return true;
-  return compact.length >= 8 && vowelRatio(compact) < 0.18 && !/\d/.test(compact);
-}
-
-function vowelRatio(value: string) {
-  const letters = value.replace(/[^a-z]/g, "");
-  if (!letters) return 0;
-  return (letters.match(/[aeiouy]/g)?.length ?? 0) / letters.length;
-}
-
-function isAffirmativeReply(value: string) {
-  return /^(oui|ok|okay|go|vas y|allez|d accord|daccord|c est bon|cest bon|valide|je valide)\b/.test(normalizeForIntent(value));
-}
-
-function isNegativeReply(value: string) {
-  return /^(non|nope|nan|pas maintenant|pas tout de suite|laisse|gardons)\b/.test(normalizeForIntent(value));
+function buildSearchRecoveryCta(url?: string, finalFallback = false) {
+  const redirectPath = url ?? "https://www.google.com/search?q=prestataire%20mariage";
+  return {
+    action: finalFallback ? "external_google_search" : "retry_search",
+    categorie: null,
+    redirect_path: redirectPath,
+    ctaHref: redirectPath,
+    ctaLabel: finalFallback ? "Ouvrir la recherche Google" : "Pousser la recherche"
+  };
 }
 
 function categoryToSearchLabel(category: VendorCategory) {
@@ -1342,21 +1497,6 @@ function categoryToSearchLabel(category: VendorCategory) {
   }
 }
 
-function buildProfileBrief(profile: Partial<WeddingProfile> | null) {
-  return {
-    prenoms: [profile?.partner_one_name, profile?.partner_two_name].filter(Boolean).join(" & ") || null,
-    date_mariage: profile?.wedding_date ?? profile?.wedding_period_text ?? null,
-    lieu_mariage: profile?.city ?? profile?.region ?? profile?.country ?? null,
-    budget_global: profile?.budget_max ?? profile?.budget_min ?? null,
-    nombre_invites: profile?.guest_count ?? null,
-    checklist: normalizeWeddingChecklist(profile?.wedding_checklist).map((item) => ({
-      id: item.id,
-      titre: item.title,
-      statut: item.done ? "fait" : "a_faire"
-    }))
-  };
-}
-
 function readString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -1376,15 +1516,11 @@ function readStringArray(value: unknown) {
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
-function cleanNullableString(value: unknown) {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function normalizeForIntent(value: string) {
   return value
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[̀-ͯ]/g, "")
     .replace(/['’]/g, " ")
     .replace(/[^a-z0-9€ ]+/g, " ")
     .replace(/\s+/g, " ")
@@ -1393,19 +1529,6 @@ function normalizeForIntent(value: string) {
 
 function normalizeLocationKey(value: string) {
   return normalizeForIntent(value).replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function formatDisplayLocation(value: string) {
-  const normalized = normalizeLocationKey(value);
-  if (normalized === "ile de france") return "Île-de-France";
-  if (normalized === "provence alpes cote d azur") return "Provence-Alpes-Côte d'Azur";
-  return value
-    .split(/\s+/)
-    .map((word) => (word.length <= 2 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()))
-    .join(" ")
-    .replace(/\bDe\b/g, "de")
-    .replace(/\bDu\b/g, "du")
-    .replace(/\bDes\b/g, "des");
 }
 
 function sleep(ms: number) {

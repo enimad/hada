@@ -43,7 +43,6 @@ export default function OnboardingPage() {
   const [noPlaceYet, setNoPlaceYet] = useState(false);
   const [noGuestListYet, setNoGuestListYet] = useState(false);
   const [noBudgetYet, setNoBudgetYet] = useState(false);
-  const [citySuggestions, setCitySuggestions] = useState<string[]>([]);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
@@ -93,36 +92,6 @@ export default function OnboardingPage() {
     void loadProfile();
   }, [router]);
 
-  useEffect(() => {
-    const query = form.placeDraft.trim();
-    if (query.length < 2 || noPlaceYet) {
-      setCitySuggestions([]);
-      return;
-    }
-
-    const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
-      try {
-        const response = await fetch(
-          `https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(query)}&fields=nom,departement&boost=population&limit=8`,
-          { signal: controller.signal }
-        );
-
-        if (!response.ok) return;
-        const result = (await response.json()) as Array<{ nom: string; departement?: { nom?: string } }>;
-        const suggestions = result
-          .map((item) => (item.departement?.nom ? `${item.nom} (${item.departement.nom})` : item.nom))
-          .filter(Boolean);
-        setCitySuggestions(Array.from(new Set(suggestions)));
-      } catch {}
-    }, 180);
-
-    return () => {
-      controller.abort();
-      window.clearTimeout(timer);
-    };
-  }, [form.placeDraft, noPlaceYet]);
-
   const formattedDate = form.weddingDate ? formatDateFr(form.weddingDate) : "";
   const canSubmitPlaces = form.placeIdeas.length > 0 || form.placeDraft.trim().length > 0 || noPlaceYet;
 
@@ -136,7 +105,6 @@ export default function OnboardingPage() {
       placeIdeas: current.placeIdeas.includes(nextPlace) ? current.placeIdeas : [...current.placeIdeas, nextPlace],
       placeDraft: ""
     }));
-    setCitySuggestions([]);
   }
 
   function removePlaceIdea(placeIdea: string) {
@@ -307,15 +275,10 @@ export default function OnboardingPage() {
                     addPlaceIdea();
                   }
                 }}
-                list="hada-city-suggestions"
+                autoComplete="off"
                 placeholder="Paris, Toulouse, Bordeaux..."
                 className="w-full bg-transparent text-[20px] text-[var(--hada-navy)] outline-none placeholder:text-[#8f8884] sm:text-[22px]"
               />
-              <datalist id="hada-city-suggestions">
-                {citySuggestions.map((suggestion) => (
-                  <option key={suggestion} value={suggestion} />
-                ))}
-              </datalist>
             </FieldShell>
           </div>
           {form.placeIdeas.length > 0 ? (
@@ -347,7 +310,6 @@ export default function OnboardingPage() {
               setNoPlaceYet(nextChecked);
               if (nextChecked) {
                 setForm((current) => ({ ...current, placeDraft: "", placeIdeas: [] }));
-                setCitySuggestions([]);
               }
             }}
           />
@@ -501,7 +463,6 @@ export default function OnboardingPage() {
   }, [
     accessToken,
     canSubmitPlaces,
-    citySuggestions,
     form,
     formattedDate,
     isPending,

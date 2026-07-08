@@ -33,6 +33,8 @@ export const env = {
   googleModel: process.env.GOOGLE_MODEL ?? "gemini-2.5-flash",
   mistralApiKey: process.env.MISTRAL_API_KEY ?? "",
   mistralModel: process.env.MISTRAL_MODEL ?? "mistral-medium-latest",
+  // Extraction structurée des pages scrapées : tâche mécanique, un modèle rapide suffit.
+  mistralExtractionModel: process.env.MISTRAL_EXTRACTION_MODEL ?? "mistral-small-latest",
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   surveyNotifyTo: process.env.SURVEY_NOTIFY_TO ?? "",
   surveyNotifyFrom: process.env.SURVEY_NOTIFY_FROM ?? ""

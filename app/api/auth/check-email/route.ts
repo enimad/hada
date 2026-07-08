@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toSupabaseApiError } from "@/lib/supabase/errors";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function POST(request: NextRequest) {
@@ -9,13 +10,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Email manquant" }, { status: 400 });
   }
 
-  const supabase = createSupabaseServerClient();
-  const { data, error } = await supabase.auth.admin.listUsers();
+  try {
+    const supabase = createSupabaseServerClient();
+    const { data, error } = await supabase.auth.admin.listUsers();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      const apiError = toSupabaseApiError(error);
+      return NextResponse.json({ error: apiError.message }, { status: apiError.status });
+    }
+
+    const exists = data.users.some((user) => user.email?.toLowerCase() === email);
+    return NextResponse.json({ exists });
+  } catch (error) {
+    const apiError = toSupabaseApiError(error);
+    return NextResponse.json({ error: apiError.message }, { status: apiError.status });
   }
-
-  const exists = data.users.some((user) => user.email?.toLowerCase() === email);
-  return NextResponse.json({ exists });
 }

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isBlockedWeddingDirectoryUrl } from "@/lib/blocked-vendor-sources";
+import { looksLikeDirectoryPage } from "@/lib/directory-page-detector";
 import { getBudgetAllocationForVendorCategory } from "@/lib/budget";
 import { buildWeddingSummary, formatBudgetSummary, type PlannerContext } from "@/lib/prompts";
 import type { ChatMessage, UiChatMessage, VendorCandidateView, VendorCategory, WeddingProfile } from "@/lib/types";
@@ -48,8 +49,11 @@ const SEARCH_QUOTA_LIMIT = 2;
 const SEARCH_QUOTA_WINDOW_HOURS = 48;
 const SEARCH_QUOTA_WINDOW_MS = SEARCH_QUOTA_WINDOW_HOURS * 60 * 60 * 1000;
 const SEARCH_QUOTA_MARKER = { beta_search_quota: "v1" };
-const STRICT_VENDOR_SEARCH_TIMEOUT_MS = 18000;
-const EXPANDED_VENDOR_SEARCH_TIMEOUT_MS = 16000;
+// Budgets alignés sur le scrape Firecrawl à 20 s (+ marge SDK) : recherche SERP ~3 s
+// puis scrapes en parallèle. Total pire cas strict+étendu ≈ 48 s, sous le maxDuration
+// de 60 s de la route chat-v2.
+const STRICT_VENDOR_SEARCH_TIMEOUT_MS = 26000;
+const EXPANDED_VENDOR_SEARCH_TIMEOUT_MS = 22000;
 
 export type SearchQuotaStatus = {
   limit: number;
@@ -256,6 +260,7 @@ export async function createSearchResultsForUser(
           userId: input.userId,
           category: input.search.category,
           query: input.search.searchQuery,
+          location: input.search.location,
           profile: input.profile,
           mode: "strict"
         }),
@@ -272,6 +277,7 @@ export async function createSearchResultsForUser(
         userId: input.userId,
         category: input.search.category,
         query: buildExpandedSearchQuery(input.search, input.profile),
+        location: input.search.location,
         profile: input.profile,
         mode: "expanded"
       }),
@@ -302,9 +308,23 @@ export async function createSearchResultsForUser(
       })
     );
 
-    const usableNormalizedCandidates = normalizedCandidates.filter(({ candidate, normalized }) =>
-      hasUsableNormalizedProfile(candidate, normalized.vendorProfile, normalized.usedFallback)
-    );
+    const usableNormalizedCandidates = normalizedCandidates.filter(({ candidate, normalized }) => {
+      if (!hasUsableNormalizedProfile(candidate, normalized.vendorProfile, normalized.usedFallback)) return false;
+
+      // Porte de création : jamais de fiche depuis une page d'annuaire.
+      // Check déterministe (structure de l'URL source) puis signal du normalizer
+      // (loggé pour observer les éventuels faux positifs du LLM).
+      if (candidate.sourceUrl && looksLikeDirectoryPage({ url: candidate.sourceUrl })) {
+        console.warn("vendor_candidate_rejected", "directory_source", candidate.sourceUrl);
+        return false;
+      }
+      if (normalized.vendorProfile.quality.generated_from === "directory") {
+        console.warn("vendor_candidate_rejected", "normalizer_directory_flag", candidate.sourceUrl ?? candidate.website ?? candidate.name);
+        return false;
+      }
+
+      return true;
+    });
 
     if (usableNormalizedCandidates.length === 0) {
       await supabase.from("vendor_requests").update({ status: "no_results" }).eq("id", request.id);
@@ -491,6 +511,13 @@ async function loadCachedCandidatesForUser(supabase: SupabaseClient, userId: str
 
   return (candidates ?? [])
     .filter((candidate) => !isBlockedWeddingDirectoryUrl(candidate.source_url) && !isBlockedWeddingDirectoryUrl(candidate.website))
+    // Hygiène cache : les fiches historiques issues d'annuaires ne sont jamais resservies.
+    .filter((candidate) => ((candidate.metadata_json ?? {}).sourceType ?? null) !== "directory")
+    .filter(
+      (candidate) =>
+        !(candidate.source_url && looksLikeDirectoryPage({ url: candidate.source_url })) &&
+        !(candidate.website && looksLikeDirectoryPage({ url: candidate.website }))
+    )
     .map((candidate) => {
       const metadata = candidate.metadata_json ?? {};
       return {
@@ -540,12 +567,16 @@ function filterReusableCachedCandidates(
   const location = normalize([search.location, profile?.city, profile?.region, profile?.country].filter(Boolean).join(" "));
   const style = normalize(search.style ?? "");
   const constraints = normalize(search.constraints ?? "");
+  // Pour l'exigence géographique dure, on n'utilise PAS le pays (sinon « France »
+  // matcherait n'importe quel prestataire français).
+  const requestedLocation = normalize(search.location ?? profile?.city ?? profile?.region ?? "");
 
   return candidates
     .filter((candidate) => candidate.category === search.category)
     .filter((candidate) => !isBlockedWeddingDirectoryUrl(candidate.sourceUrl) && !isBlockedWeddingDirectoryUrl(candidate.website))
     .filter((candidate) => (candidate.score ?? 0) >= 45)
     .filter((candidate) => hasUsableVendorData(candidate))
+    .filter((candidate) => matchesRequestedLocation(candidate, requestedLocation))
     .map((candidate) => ({
       candidate,
       relevance: computeCacheRelevance(candidate, { location, style, constraints })
@@ -591,8 +622,34 @@ function computeCacheRelevance(
   return score;
 }
 
+/**
+ * Exigence géographique du cache : quand un lieu est demandé, le candidat doit
+ * mentionner ce lieu (hors particules génériques de toponymes : « saint », « sur »...)
+ * ou annoncer une couverture nationale. Les fiches sans correspondance sont écartées
+ * plutôt que resservies hors zone (ex. food truck breton pour Saint-Cloud).
+ */
+function matchesRequestedLocation(candidate: VendorCatalogEntry, requestedLocation: string) {
+  if (!requestedLocation) return true;
+
+  const haystack = normalize(
+    [candidate.city, candidate.region, candidate.zoneIntervention, candidate.address, candidate.summary].filter(Boolean).join(" ")
+  );
+  if (!haystack) return false;
+
+  if (/\b(toute la france|france entiere|partout en france|national|a l etranger|international|destination wedding)\b/.test(haystack)) {
+    return true;
+  }
+
+  const stopwords = new Set(["saint", "sainte", "st", "ste", "sur", "sous", "les", "le", "la", "aux", "mont", "ville", "pres", "chez", "de", "du", "des", "en", "et", "france"]);
+  const tokens = requestedLocation.split(/\s+/).filter((word) => word.length > 2 && !stopwords.has(word));
+  if (tokens.length === 0) return haystack.includes(requestedLocation.trim());
+  return tokens.some((token) => haystack.includes(token));
+}
+
 function hasUsableVendorData(candidate: VendorCatalogEntry) {
   if (isBlockedWeddingDirectoryUrl(candidate.sourceUrl) || isBlockedWeddingDirectoryUrl(candidate.website)) return false;
+  if (candidate.sourceUrl && looksLikeDirectoryPage({ url: candidate.sourceUrl })) return false;
+  if (candidate.website && looksLikeDirectoryPage({ url: candidate.website })) return false;
   const hasContact = Boolean(candidate.website || candidate.email || candidate.phone);
   const hasContent = Boolean(candidate.summary || candidate.highlights?.length || candidate.specialties);
   return hasContact && hasContent;

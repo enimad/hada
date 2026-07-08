@@ -23,7 +23,20 @@ const BLOCKED_WEDDING_DIRECTORY_HOSTS = [
   "lemariagedanstoussesetats.fr",
   "jeunes-maries.com",
   "leblogdemadamec.fr",
-  "la-mariee-aux-pieds-nus.fr"
+  "la-mariee-aux-pieds-nus.fr",
+  "zankyou.com",
+  "abcsalles.com",
+  "1001salles.com",
+  "pagesjaunes.fr",
+  "yelp.fr",
+  "yelp.com",
+  "tripadvisor.fr",
+  "tripadvisor.com",
+  "justacote.com",
+  "petitfute.com",
+  "linternaute.com",
+  "leboncoin.fr",
+  "mariage.com"
 ];
 
 export function isBlockedWeddingDirectoryUrl(value: string | null | undefined) {

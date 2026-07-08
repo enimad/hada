@@ -6,7 +6,11 @@
     "dev": "node scripts/dev-next.mjs",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:intent": "node scripts/test-intent-router.mjs",
+    "eval:intent": "node scripts/eval-intent-live.mjs",
+    "test:directory": "node scripts/test-directory-detector.mjs",
+    "purge:directory": "node scripts/purge-directory-candidates.mjs"
   },
   "dependencies": {
     "@mendable/firecrawl-js": "^4.20.1",

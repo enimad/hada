@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { looksLikeDirectoryPage } from "@/lib/directory-page-detector";
 import { getAuthenticatedUser } from "@/lib/supabase/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getVendorCategories } from "@/lib/vendor-catalog";
@@ -44,7 +45,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: candidatesError.message }, { status: 500 });
     }
 
-    const normalized: VendorCandidateView[] = (candidates ?? []).map((candidate) => ({
+    // Porte d'affichage : les fiches historiques issues d'annuaires (avant le
+    // durcissement de la recherche) disparaissent immédiatement, même sans purge.
+    const displayableRows = (candidates ?? []).filter(
+      (candidate) =>
+        ((candidate.metadata_json ?? {}).sourceType ?? null) !== "directory" &&
+        !(candidate.source_url && looksLikeDirectoryPage({ url: candidate.source_url })) &&
+        !(candidate.website && looksLikeDirectoryPage({ url: candidate.website }))
+    );
+
+    const normalized: VendorCandidateView[] = displayableRows.map((candidate) => ({
       id: candidate.id,
       slug: candidate.metadata_json?.slug ?? slugify(candidate.name),
       name: candidate.name,

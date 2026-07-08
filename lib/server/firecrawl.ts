@@ -1,6 +1,7 @@
 import Firecrawl from "@mendable/firecrawl-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isBlockedWeddingDirectoryHost, isBlockedWeddingDirectoryUrl } from "@/lib/blocked-vendor-sources";
+import { isGenericDirectoryHost, looksLikeDirectoryPage } from "@/lib/directory-page-detector";
 import { env } from "@/lib/env";
 import { collectDisplayImageUrls, isLikelyImageUrl } from "@/lib/image-url";
 import type { VendorCategory, VendorReviewSnippet, WeddingProfile } from "@/lib/types";
@@ -29,12 +30,26 @@ Réponds UNIQUEMENT avec un objet JSON. Ne génère rien d'autre.
 Si une information est absente de la page, mets null pour ce champ.
 N'invente aucune information.
 
-Vérifie en priorité : ce prestataire travaille-t-il explicitement pour des mariages ?
-Si la page ne mentionne pas "mariage", "wedding", "union", "cérémonie" ou équivalent, retourne { "hors_perimetre": true } et rien d'autre.
+Détermine D'ABORD le type de page ("type_de_page") :
+- "site_prestataire" : le site officiel d'UN SEUL prestataire (portfolio, site vitrine, page de présentation ou de contact du prestataire lui-même).
+- "annuaire_ou_liste" : annuaire, comparateur, place de marché ou toute page listant PLUSIEURS prestataires (ex. mariages.net, pagesjaunes, "les 10 meilleurs traiteurs...", page de résultats de recherche, fiche hébergée sur une plateforme tierce).
+- "blog_ou_media" : article de blog, magazine, guide éditorial.
+- "autre" : tout le reste.
+Si le type n'est pas "site_prestataire", retourne { "type_de_page": "...", "hors_perimetre": true } et rien d'autre.
+
+Vérifie ensuite : ce prestataire travaille-t-il explicitement pour des mariages ?
+Si la page ne mentionne pas "mariage", "wedding", "union", "cérémonie" ou équivalent, retourne { "type_de_page": "site_prestataire", "hors_perimetre": true } et rien d'autre.
+
+Le message utilisateur peut préciser le lieu du mariage recherché. Dans ce cas, détermine "couvre_zone_recherchee" :
+- true : le prestataire peut raisonnablement intervenir sur ce lieu (zone d'intervention annoncée couvrant ce secteur, mention "toute la France" / "national" / "à l'étranger", ou adresse située dans le même secteur géographique).
+- false : la page annonce clairement une zone d'intervention ou une adresse qui NE couvre PAS ce lieu (autre région française éloignée, départements listés incompatibles).
+- null : la page ne permet pas de le savoir, ou aucun lieu recherché n'est fourni.
 
 Si le prestataire travaille bien pour des mariages, retourne :
 {
+  "type_de_page": "site_prestataire",
   "hors_perimetre": false,
+  "couvre_zone_recherchee": null,
   "nom": "",
   "categorie": "",
   "adresse": "",
@@ -57,56 +72,27 @@ Si le prestataire travaille bien pour des mariages, retourne :
   "avis": []
 }
 
-Le champ "references_mariage" doit contenir une courte phrase extraite de la page qui confirme que ce prestataire fait des mariages.`;
+Le champ "references_mariage" doit contenir une courte phrase extraite de la page qui confirme que ce prestataire fait des mariages.
+Limites strictes pour garder un JSON court : "photos" contient au maximum 4 URLs, "avis" au maximum 3 entrées, "description_detaillee" au maximum 2 phrases, "points_forts" au maximum 4 éléments.`;
 
-const EXTRACTION_SCHEMA = {
-  type: "object",
-  properties: {
-    hors_perimetre: { type: ["boolean", "null"] },
-    nom: { type: ["string", "null"] },
-    categorie: { type: ["string", "null"] },
-    adresse: { type: ["string", "null"] },
-    zone_intervention: { type: ["string", "null"] },
-    email: { type: ["string", "null"] },
-    telephone: { type: ["string", "null"] },
-    site_web: { type: ["string", "null"] },
-    note_moyenne: { type: ["string", "number", "null"] },
-    nombre_avis: { type: ["string", "number", "null"] },
-    fourchette_prix: { type: ["string", "null"] },
-    capacite_invites: { type: ["string", "number", "null"] },
-    style: { type: ["string", "null"] },
-    description_detaillee: { type: ["string", "null"] },
-    points_forts: {
-      type: ["array", "null"],
-      items: { type: "string" }
-    },
-    specialites: { type: ["string", "null"] },
-    contraintes: { type: ["string", "null"] },
-    disponibilite: { type: ["string", "null"] },
-    references_mariage: { type: ["string", "null"] },
-    photos: {
-      type: ["array", "null"],
-      items: { type: "string" }
-    },
-    avis: {
-      type: ["array", "null"],
-      items: {
-        type: "object",
-        properties: {
-          auteur: { type: ["string", "null"] },
-          note: { type: ["string", "number", "null"] },
-          date: { type: ["string", "null"] },
-          texte: { type: ["string", "null"] },
-          source: { type: ["string", "null"] }
-        }
-      }
-    }
-  }
-} as const;
+// NB : l'extraction structurée est réalisée par Mistral (extractVendorDataWithMistral),
+// le schéma JSON attendu est décrit directement dans EXTRACTION_PROMPT.
 
 const FIRECRAWL_OPERATION_TIMEOUT_MS = 9000;
-const FIRECRAWL_SEARCH_LIMIT = 6;
-const FIRECRAWL_SCRAPE_LIMIT = 3;
+// Scrape markdown seul (l'extraction JSON est faite par Mistral, pas par Firecrawl) :
+// 15 s suffisent pour un rendu fastMode, même sur les portfolios lourds.
+const FIRECRAWL_SCRAPE_TIMEOUT_MS = 15000;
+// Réutilisation du cache de scrape Firecrawl (page déjà scrapée récemment = réponse immédiate).
+const FIRECRAWL_SCRAPE_CACHE_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
+const MISTRAL_EXTRACTION_TIMEOUT_MS = 15000;
+// Limites relevées pour compenser des filtres anti-annuaires plus stricts :
+// plus de résultats bruts, plus de scrapes en parallèle (budget temps inchangé,
+// coût crédits Firecrawl plus élevé par recherche).
+const FIRECRAWL_SEARCH_LIMIT = 10;
+const FIRECRAWL_SCRAPE_LIMIT = 5;
+// Suffixe best-effort transmis au moteur de recherche (opérateurs Google-style).
+// Ajouté APRÈS compactFirecrawlQuery, qui détruirait les ':' et '.'.
+const NEGATIVE_QUERY_SUFFIX = "-annuaire -site:mariages.net -site:zankyou.fr -site:pagesjaunes.fr";
 
 export async function searchVendorsWithFirecrawl(
   supabase: SupabaseClient,
@@ -114,6 +100,7 @@ export async function searchVendorsWithFirecrawl(
     userId: string;
     category: VendorCategory;
     query: string;
+    location?: string | null;
     profile: Partial<WeddingProfile> | null;
     mode?: "strict" | "expanded";
   }
@@ -129,51 +116,54 @@ export async function searchVendorsWithFirecrawl(
     // Clés API Firecrawl à renseigner dans .env.local via FIRECRAWL_API_KEY ou FIRECRAWL_API_KEYS.
     const existingDomains = await loadExistingDomains(supabase, input.userId);
     const mode = input.mode ?? "strict";
-    const searchQuery = buildFirecrawlQuery(input.category, input.query, input.profile, mode);
+    const searchQuery = buildFirecrawlQuery(input.category, input.query, input.profile, mode, input.location);
 
     const searchResults = await withFirecrawlKeyRotation(apiKeys, disabledKeyIndexes, "search", (firecrawl) =>
       firecrawl.search(searchQuery, {
         sources: ["web"],
         limit: FIRECRAWL_SEARCH_LIMIT,
-        lang: "fr",
-        timeout: FIRECRAWL_OPERATION_TIMEOUT_MS,
-        scrapeOptions: {
-          formats: ["markdown"],
-          onlyMainContent: true,
-          fastMode: true
-        }
+        // NB : "lang" n'est pas un paramètre supporté par le SDK (silencieusement ignoré) ;
+        // "location" est le paramètre officiel de localisation des résultats.
+        location: "France",
+        // Pas de scrapeOptions ici : avec limit=10, scraper chaque résultat pendant
+        // la recherche dépasse le timeout (14 s constatés) et coûte des crédits pour
+        // rien — titre + description SERP suffisent aux filtres pré-scrape, le scrape
+        // dédié n'a lieu qu'après sélection.
+        timeout: FIRECRAWL_OPERATION_TIMEOUT_MS
       } as never)
     );
 
-    const selectedResults = readFirecrawlSearchItems(searchResults)
+    const parsedItems = readFirecrawlSearchItems(searchResults)
       .map((item) => ({
         url: extractUrl(item) ?? "",
         title: item.title ?? undefined,
         description: item.description ?? item.snippet ?? item.markdown ?? undefined,
         markdown: item.markdown ?? undefined
       }))
-      .filter((item) => item.url)
-      .filter((item) => !isBlockedWeddingDirectoryUrl(item.url))
-      .filter((item) => passesPreScrapeFilters(item, input.category, existingDomains, mode))
-      .slice(0, FIRECRAWL_SCRAPE_LIMIT);
+      .filter((item) => item.url);
+
+    const selectedResults: SearchResultLike[] = [];
+    for (const item of parsedItems) {
+      const rejectReason = getPreScrapeRejectReason(item, input.category, existingDomains, mode);
+      if (rejectReason) {
+        console.info("firecrawl_reject", rejectReason, item.url);
+        continue;
+      }
+      selectedResults.push(item);
+      if (selectedResults.length >= FIRECRAWL_SCRAPE_LIMIT) break;
+    }
 
     const results = await Promise.all(
-      selectedResults.map((result) => scrapeVendorResult(apiKeys, disabledKeyIndexes, result, input.category, input.query, input.profile, mode))
+      selectedResults.map((result) =>
+        scrapeVendorResult(apiKeys, disabledKeyIndexes, result, input.category, input.query, input.profile, mode, input.location)
+      )
     );
 
-    const validResults = results
+    // Politique produit : une fiche n'est créée QUE depuis une page scrapée et
+    // vérifiée comme site du prestataire. Pas de fiche de secours construite
+    // depuis les seuls résultats de recherche.
+    return results
       .filter((item): item is FirecrawlVendorResult => Boolean(item))
-      .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
-      .slice(0, 3);
-
-    if (validResults.length >= 3) return validResults;
-
-    const fallbackResults = selectedResults
-      .filter((result) => !validResults.some((candidate) => sameDomain(candidate.website ?? candidate.sourceUrl ?? "", result.url)))
-      .map((result) => buildSearchResultCandidate(result, input.category, input.query, input.profile))
-      .filter((item): item is FirecrawlVendorResult => Boolean(item));
-
-    return [...validResults, ...fallbackResults]
       .filter((candidate) => hasEnoughDataForProfile(candidate, input.category))
       .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
       .slice(0, 3);
@@ -190,35 +180,145 @@ async function scrapeVendorResult(
   category: VendorCategory,
   query: string,
   profile: Partial<WeddingProfile> | null,
-  mode: "strict" | "expanded"
+  mode: "strict" | "expanded",
+  searchLocation?: string | null
 ) {
   try {
+    // Fetch découplé de l'extraction : demander à Firecrawl le JSON structuré
+    // (rendu complet + LLM côté Firecrawl) produisait des SCRAPE_TIMEOUT en série
+    // sur les sites vitrines lourds. Ici : markdown seul (rapide, avec cache),
+    // puis extraction structurée via Mistral, sous notre contrôle.
     const doc = await withFirecrawlKeyRotation(apiKeys, disabledKeyIndexes, "scrape", (firecrawl) =>
       firecrawl.scrape(searchResult.url, {
-        formats: [
-          "markdown",
-          {
-            type: "json",
-            prompt: EXTRACTION_PROMPT,
-            schema: EXTRACTION_SCHEMA
-          }
-        ],
+        formats: ["markdown"],
         onlyMainContent: true,
         fastMode: true,
-        timeout: FIRECRAWL_OPERATION_TIMEOUT_MS
+        // Réutilise un scrape récent du cache Firecrawl si disponible (quasi instantané).
+        maxAge: FIRECRAWL_SCRAPE_CACHE_MAX_AGE_MS,
+        timeout: FIRECRAWL_SCRAPE_TIMEOUT_MS
       } as never)
     );
 
     const document = unwrapFirecrawlDocument(doc);
-    const extracted = document.json ?? document.extract ?? document.data ?? null;
     const markdown =
       [document.markdown, document.content].find((value): value is string => typeof value === "string" && value.trim().length > 0) ?? null;
+    if (!markdown) return null;
 
-    return toVendorResult(extracted, searchResult, category, query, profile, mode, markdown);
+    const extracted = await extractVendorDataWithMistral(markdown, searchResult, searchLocation);
+    if (!extracted) return null;
+
+    return toVendorResult(extracted, searchResult, category, query, profile, mode, markdown, searchLocation);
   } catch (error) {
     console.error("Firecrawl scrape error", error);
     return null;
   }
+}
+
+/**
+ * Extraction structurée du contenu scrapé via l'API Mistral (JSON mode).
+ * Concurrence limitée : les scrapes tournent en parallèle mais le compte Mistral
+ * est rate-limité, donc les extractions passent par un petit sas.
+ */
+async function extractVendorDataWithMistral(
+  markdown: string,
+  searchResult: SearchResultLike,
+  searchLocation?: string | null
+): Promise<Record<string, unknown> | null> {
+  if (!env.mistralApiKey) return null;
+
+  const content = markdown.replace(/\n{3,}/g, "\n\n").slice(0, 14000);
+  await mistralExtractionSemaphore.acquire();
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), MISTRAL_EXTRACTION_TIMEOUT_MS);
+
+      try {
+        const response = await fetch("https://api.mistral.ai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${env.mistralApiKey}`
+          },
+          body: JSON.stringify({
+            model: env.mistralExtractionModel,
+            temperature: 0,
+            max_tokens: 1800,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: EXTRACTION_PROMPT },
+              {
+                role: "user",
+                content: [
+                  `URL de la page : ${searchResult.url}`,
+                  `Titre : ${searchResult.title ?? ""}`,
+                  searchLocation ? `Lieu du mariage recherché : ${searchLocation} (le prestataire doit pouvoir y intervenir).` : null,
+                  "",
+                  `Contenu de la page (markdown) :\n${content}`
+                ]
+                  .filter((line): line is string => line !== null)
+                  .join("\n")
+              }
+            ]
+          }),
+          signal: controller.signal
+        });
+
+        if (response.status === 429) {
+          await sleepMs(1200 * (attempt + 1));
+          continue;
+        }
+        if (!response.ok) return null;
+
+        const result = await response.json();
+        const text = result?.choices?.[0]?.message?.content?.trim();
+        if (!text) return null;
+
+        try {
+          return JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          const match = text.match(/\{[\s\S]*\}/);
+          return match ? (JSON.parse(match[0]) as Record<string, unknown>) : null;
+        }
+      } catch {
+        // abort (timeout) ou erreur réseau : on tente la seconde passe puis on abandonne.
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return null;
+  } finally {
+    mistralExtractionSemaphore.release();
+  }
+}
+
+class AsyncSemaphore {
+  private queue: Array<() => void> = [];
+  private available: number;
+
+  constructor(count: number) {
+    this.available = count;
+  }
+
+  async acquire() {
+    if (this.available > 0) {
+      this.available -= 1;
+      return;
+    }
+    await new Promise<void>((resolve) => this.queue.push(resolve));
+  }
+
+  release() {
+    const next = this.queue.shift();
+    if (next) next();
+    else this.available += 1;
+  }
+}
+
+const mistralExtractionSemaphore = new AsyncSemaphore(2);
+
+function sleepMs(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function withFirecrawlKeyRotation<T>(
@@ -316,15 +416,22 @@ function unwrapFirecrawlDocument(raw: unknown): Record<string, unknown> {
   return document;
 }
 
-function buildFirecrawlQuery(category: VendorCategory, query: string, profile: Partial<WeddingProfile> | null, mode: "strict" | "expanded") {
-  const location = getPrimarySearchLocation(profile);
+function buildFirecrawlQuery(
+  category: VendorCategory,
+  query: string,
+  profile: Partial<WeddingProfile> | null,
+  mode: "strict" | "expanded",
+  searchLocation?: string | null
+) {
+  const location = getPrimarySearchLocation(profile, searchLocation);
   const baseQuery = buildCategorySearchCore(category, location);
   const modifiers = cleanSearchModifiers(query, category, location);
-  return compactFirecrawlQuery(`${baseQuery} ${modifiers} site officiel`, mode === "expanded" ? 12 : 10).slice(0, 160);
+  const compacted = compactFirecrawlQuery(`${baseQuery} ${modifiers} site officiel`, mode === "expanded" ? 12 : 10).slice(0, 160);
+  return `${compacted} ${NEGATIVE_QUERY_SUFFIX}`;
 }
 
-function getPrimarySearchLocation(profile: Partial<WeddingProfile> | null) {
-  const raw = profile?.city ?? profile?.region ?? profile?.country ?? "France";
+function getPrimarySearchLocation(profile: Partial<WeddingProfile> | null, searchLocation?: string | null) {
+  const raw = searchLocation ?? profile?.city ?? profile?.region ?? profile?.country ?? "France";
   const withoutContext = raw
     .split(",")[0]
     .replace(/\([^)]*\)/g, "")
@@ -463,165 +570,35 @@ function extractUrl(item: { url?: string | null; link?: string | null }) {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function passesPreScrapeFilters(
+/**
+ * Filtres pré-scrape. Les contrôles anti-annuaires sont INCONDITIONNELS
+ * (identiques en strict et étendu) : seuls les critères de pertinence
+ * (mots-clés catégorie) restent réservés au mode strict.
+ * Retourne la raison du rejet (pour observabilité), ou null si le résultat est retenu.
+ */
+function getPreScrapeRejectReason(
   item: SearchResultLike,
   category: VendorCategory,
   existingDomains: Set<string>,
   mode: "strict" | "expanded"
-) {
+): string | null {
   const domain = extractDomain(item.url);
   const lowerUrl = item.url.toLowerCase();
   const lowerTarget = normalize(`${item.url} ${item.title ?? ""} ${item.description ?? ""}`);
 
-  if (isBlockedWeddingDirectoryHost(domain)) return false;
-  if (isSocialDomain(domain)) return false;
-  if (mode === "strict" && isGenericDirectoryDomain(domain)) return false;
-  if (/\/(blog|article|guide|conseil|inspiration|tendance|actualite)\//i.test(lowerUrl)) return false;
-  if (existingDomains.has(domain)) return false;
-  if (mode === "strict" && !categoryKeywords(category).some((keyword) => lowerTarget.includes(normalize(keyword)))) return false;
+  if (isBlockedWeddingDirectoryHost(domain)) return "blocked_host";
+  if (isSocialDomain(domain)) return "social";
+  if (isGenericDirectoryHost(domain)) return "generic_directory_host";
+  if (looksLikeDirectoryPage({ url: item.url, title: item.title, description: item.description })) return "directory_shape";
+  if (/\/(blog|article|guide|conseil|inspiration|tendance|actualite)\//i.test(lowerUrl)) return "editorial_path";
+  if (existingDomains.has(domain)) return "already_known_domain";
+  if (mode === "strict" && !categoryKeywords(category).some((keyword) => lowerTarget.includes(normalize(keyword)))) return "missing_category_keyword";
 
-  return true;
-}
-
-function isGenericDirectoryDomain(domain: string) {
-  return /(^|\.)mariages\.net$|(^|\.)mariage\.fr$|(^|\.)mariage\.com$|(^|\.)zankyou\.fr$|pages-jaunes\.fr|(^|\.)yelp\.fr$|(^|\.)tripadvisor\.fr$|leboncoin\.fr|(^|\.)annuaire\.|(^|\.)directory\.|(^|\.)list\./.test(
-    domain
-  );
+  return null;
 }
 
 function isSocialDomain(domain: string) {
   return /facebook\.com|instagram\.com|linkedin\.com|pinterest\.com|tiktok\.com/.test(domain);
-}
-
-function isLikelyOfficialProviderPage(item: SearchResultLike, category: VendorCategory) {
-  const domain = extractDomain(item.url);
-  const target = normalize(`${item.url} ${item.title ?? ""} ${item.description ?? ""}`);
-
-  if (isBlockedWeddingDirectoryHost(domain)) return false;
-  if (isSocialDomain(domain)) return false;
-  if (/\/(blog|article|guide|conseil|inspiration|tendance|actualite)\//i.test(item.url)) return false;
-  if (!target.includes("mariage") && !target.includes("wedding") && !target.includes(categoryToShortLabel(category))) return false;
-  if (!categoryKeywords(category).some((keyword) => target.includes(normalize(keyword)))) return false;
-
-  return true;
-}
-
-function buildSearchResultCandidate(
-  searchResult: SearchResultLike,
-  category: VendorCategory,
-  query: string,
-  profile: Partial<WeddingProfile> | null
-): FirecrawlVendorResult | null {
-  if (!isLikelyOfficialProviderPage(searchResult, category)) return null;
-  if (isBlockedWeddingDirectoryUrl(searchResult.url)) return null;
-
-  const name = extractProviderName(searchResult);
-  if (!name) return null;
-  if (isGenericProviderName(name, category)) return null;
-
-  const website = sanitizeWebsite(searchResult.url, searchResult.url);
-  if (!website) return null;
-  if (isBlockedWeddingDirectoryUrl(website)) return null;
-
-  const city = extractLocationFromSearchResult(searchResult, profile);
-  const richText = [searchResult.markdown, searchResult.description, searchResult.title].filter(Boolean).join("\n");
-  const summary = buildSearchResultSummary(searchResult, category);
-  const sourceLabel = extractDomain(website);
-  const reviewSearchUrl = buildReviewSearchUrl(name, category, city);
-  const email = extractEmail(richText);
-  const phone = extractPhone(richText);
-  const images = readImages({}, website, searchResult.markdown ?? null);
-  const highlights = buildFallbackHighlights(searchResult, category);
-  const score = Math.max(
-    computeQualityScore({
-      profile,
-      zoneIntervention: city,
-      rating: null,
-      reviewsCount: null,
-      email,
-      priceRange: null,
-      weddingReference: summary
-    }),
-    website && summary ? (email || phone || images.length > 0 ? 45 : 35) : 0
-  );
-
-  if (score < 25) return null;
-
-  return {
-    id: `firecrawl-search-${slugify(name)}-${sourceLabel}`,
-    slug: slugify(name),
-    name,
-    category,
-    website,
-    email,
-    phone,
-    address: null,
-    city,
-    region: city,
-    priceRange: null,
-    priceValue: 0,
-    guestCapacity: 0,
-    score,
-    summary,
-    sourceUrl: searchResult.url,
-    image: images[0] ?? null,
-    images,
-    capacity: null,
-    vibe: null,
-    rating: null,
-    reviewsCount: null,
-    highlights,
-    tags: buildTags(category, city, null, null),
-    match: null,
-    contactLead: email || phone ? "Coordonnées détectées depuis la page source." : "Coordonnées à vérifier sur le site web.",
-    sourceLabel,
-    keywords: buildKeywords(category, query, city, null, null),
-    limitations: ["Fiche à compléter depuis le site web"],
-    reviewSearchUrl,
-    reviewSnippets: [],
-    availability: null,
-    specialties: null,
-    zoneIntervention: city
-  };
-}
-
-function buildFallbackHighlights(searchResult: SearchResultLike, category: VendorCategory) {
-  const values = [categoryToShortLabel(category), extractDomain(searchResult.url), searchResult.description]
-    .filter(Boolean)
-    .flatMap((value) => splitValues(String(value)))
-    .map(capitalizeFirst)
-    .filter((value) => value.length >= 3 && value.length <= 70);
-
-  return Array.from(new Set(values)).slice(0, 3);
-}
-
-function buildSearchResultSummary(searchResult: SearchResultLike, category: VendorCategory) {
-  const description = searchResult.description?.replace(/\s+/g, " ").trim();
-  if (description && description.length >= 40) {
-    return isTruncatedSeoText(description)
-      ? `${description.replace(/(\.\.\.|…)$/g, "").trim()}. Informations à confirmer sur le site source.`
-      : description;
-  }
-
-  return `Prestataire identifié depuis une recherche web ciblée ${categoryToShortLabel(category)} mariage. Informations à confirmer sur le site source.`;
-}
-
-function extractProviderName(searchResult: SearchResultLike) {
-  const title = searchResult.title?.trim();
-  if (!title) return null;
-
-  return title
-    .split(/\s[-–|]\s/)
-    .map((part) => part.trim())
-    .find((part) => part.length >= 3 && !/traiteur mariage|mariage|avis|toulouse|site officiel/i.test(part))
-    ?.slice(0, 80) ?? title.split(/\s[-–|]\s/)[0]?.trim().slice(0, 80) ?? null;
-}
-
-function extractLocationFromSearchResult(searchResult: SearchResultLike, profile: Partial<WeddingProfile> | null) {
-  const target = `${searchResult.title ?? ""} ${searchResult.description ?? ""}`;
-  const knownLocation = profile?.city ?? profile?.region ?? null;
-  if (knownLocation && normalize(target).includes(normalize(knownLocation))) return knownLocation;
-  return knownLocation;
 }
 
 function isGenericProviderName(name: string, category: VendorCategory) {
@@ -648,16 +625,6 @@ function isGenericProviderName(name: string, category: VendorCategory) {
   return genericPatterns.some((pattern) => normalized === pattern || normalized.startsWith(`${pattern} `)) || normalized === label || normalized === `${label} mariage`;
 }
 
-function isTruncatedSeoText(value: string) {
-  const trimmed = value.trim();
-  return /(\.\.\.|…)$/.test(trimmed) || / \.\.\./.test(trimmed) || trimmed.length < 80;
-}
-
-function sameDomain(left: string, right: string) {
-  if (!left || !right) return false;
-  return extractDomain(left) === extractDomain(right);
-}
-
 function extractDomain(url: string) {
   try {
     return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
@@ -673,12 +640,27 @@ function toVendorResult(
   query: string,
   profile: Partial<WeddingProfile> | null,
   mode: "strict" | "expanded",
-  markdown: string | null = null
+  markdown: string | null = null,
+  searchLocation?: string | null
 ): FirecrawlVendorResult | null {
   if (!raw || typeof raw !== "object") return null;
 
   const data = raw as Record<string, unknown>;
   if (data.hors_perimetre === true) return null;
+
+  // Rejet dur, TOUS modes : la page doit être le site du prestataire lui-même.
+  const pageType = readText(data, ["type_de_page"]);
+  if (pageType && pageType !== "site_prestataire") {
+    console.info("firecrawl_reject", `page_type_${pageType}`, searchResult.url);
+    return null;
+  }
+
+  // Rejet dur, TOUS modes : le prestataire doit pouvoir intervenir sur le lieu demandé.
+  // (ex. food truck breton proposé pour un mariage à Saint-Cloud). null = doute → on garde.
+  if (data.couvre_zone_recherchee === false) {
+    console.info("firecrawl_reject", "geo_mismatch", searchResult.url);
+    return null;
+  }
 
   const name = readText(data, ["nom"]);
   if (!name) return null;
@@ -706,7 +688,7 @@ function toVendorResult(
   const reviewsCount = readInteger(data, ["nombre_avis"]);
   const address = readText(data, ["adresse"]);
   const zoneIntervention = readText(data, ["zone_intervention"]);
-  const city = zoneIntervention ?? address;
+  const city = zoneIntervention ?? address ?? searchLocation ?? profile?.city ?? profile?.region ?? null;
   const style = readText(data, ["style"]);
   const detailedDescription = readText(data, ["description_detaillee"]);
   const strongPoints = readStringArray(data, ["points_forts"]);
@@ -718,6 +700,15 @@ function toVendorResult(
   const availability = readText(data, ["disponibilite"]);
   const sourceLabel = extractDomain(website ?? searchResult.url);
   if (isBlockedWeddingDirectoryUrl(searchResult.url) || isBlockedWeddingDirectoryUrl(website)) return null;
+  // Ceinture et bretelles : re-check structurel sur la source ET le site extrait.
+  if (looksLikeDirectoryPage({ url: searchResult.url, title: searchResult.title, description: searchResult.description })) {
+    console.info("firecrawl_reject", "directory_shape_post_scrape", searchResult.url);
+    return null;
+  }
+  if (website && website !== searchResult.url && looksLikeDirectoryPage({ url: website })) {
+    console.info("firecrawl_reject", "directory_shape_website", website);
+    return null;
+  }
   const images = readImages(data, website ?? searchResult.url, markdown);
   const image = images[0] ?? null;
   const reviewSnippets = readReviewSnippets(data);

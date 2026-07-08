@@ -113,7 +113,7 @@ export default async function BlogArticlePage({ params }: BlogArticlePageProps) 
       <header className="border-b border-[#f0ddd8] bg-white/70 px-5 py-5 backdrop-blur-xl sm:px-8">
         <nav className="mx-auto flex max-w-5xl items-center justify-between gap-4" aria-label="Navigation article">
           <Link href="/blog" className="rounded-full border border-[#eadbd6] bg-white px-5 py-3 text-sm font-extrabold text-[var(--hada-navy)]">
-            {"<-"} Blog Hada
+            Blog Hada
           </Link>
           <Link href="/signup" className="rounded-full bg-[var(--hada-coral)] px-5 py-3 text-sm font-extrabold text-white shadow-[0_14px_30px_rgba(251,105,116,0.24)]">
             Essayer Hada

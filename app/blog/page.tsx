@@ -73,7 +73,7 @@ export default function BlogPage() {
               <p className="text-xs font-extrabold uppercase tracking-[0.2em] text-[var(--hada-coral)]">{featuredPost.category}</p>
               <h2 className="mt-4 text-[clamp(28px,4vw,42px)] font-black leading-[1.04] tracking-[-0.06em]">{featuredPost.title}</h2>
               <p className="mt-4 text-base font-medium leading-8 text-[#655b72]">{featuredPost.excerpt}</p>
-              <p className="mt-6 text-sm font-extrabold text-[var(--hada-coral)]">Lire le guide {"->"}</p>
+              <p className="mt-6 text-sm font-extrabold text-[var(--hada-coral)]">Lire le guide</p>
             </div>
           </Link>
         </section>
@@ -98,7 +98,7 @@ export default function BlogPage() {
                   <p className="text-xs font-extrabold uppercase tracking-[0.2em] text-[var(--hada-coral)]">{post.category}</p>
                   <h2 className="mt-3 text-[24px] font-black leading-tight tracking-[-0.055em]">{post.title}</h2>
                   <p className="mt-4 text-sm font-medium leading-7 text-[#655b72]">{post.excerpt}</p>
-                  <p className="mt-5 text-sm font-extrabold text-[var(--hada-coral)]">Continuer la lecture {"->"}</p>
+                  <p className="mt-5 text-sm font-extrabold text-[var(--hada-coral)]">Continuer la lecture</p>
                 </div>
               </Link>
             ))}

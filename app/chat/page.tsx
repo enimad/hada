@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { ArrowUpIcon, HadaMark, MicIcon, PlusIcon, SearchIcon, SparkIcon } from "@/components/mobile-screen";
 import { stripHadaState } from "@/lib/hada-state";
@@ -13,13 +13,12 @@ import type { UiChatMessage } from "@/lib/types";
 const BETA_TOAST = "Cette fonctionnalité n'est pas disponible en version bêta.";
 const BETA_BANNER =
   "Hada est en version bêta. Comme chaque beau mariage, les détails se peaufinent avec soin. Certaines fonctionnalités sont en cours de finalisation - merci pour votre patience et votre confiance.";
-const NORMAL_CHAT_REQUEST_TIMEOUT_MS = 45000;
-const SEARCH_CHAT_REQUEST_TIMEOUT_MS = 90000;
+const CHAT_API_PATH = "/api/chat-v2";
+const CHAT_REQUEST_TIMEOUT_MS = readPositiveNumber(process.env.NEXT_PUBLIC_CHAT_REQUEST_TIMEOUT_MS, 150000);
 
 export default function ChatPage() {
   const router = useRouter();
-  const pathname = usePathname();
-  const apiPath = pathname === "/chat-v2" ? "/api/chat-v2" : "/api/chat";
+  const apiPath = CHAT_API_PATH;
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -77,9 +76,9 @@ export default function ChatPage() {
       });
 
       if (response.ok) {
-        const result = (await response.json()) as {
+        const result = await readJsonResponse<{
           messages: UiChatMessage[];
-        };
+        }>(response);
         setMessages((result.messages ?? []).map(normalizeMessage));
       } else {
         setMessages([
@@ -128,12 +127,12 @@ export default function ChatPage() {
       role: "user",
       content
     };
-    const expectsSearchFlow = options?.action === "retry_search" || isLikelyExplicitSearchRequest(content);
+    const isRetrySearchFlow = options?.action === "retry_search";
 
     setMessages((current) => [...current, optimisticMessage, { id: placeholderId, role: "assistant", content: "" }]);
     setTypingMessageId(placeholderId);
-    setWaitingLabel(options?.action === "retry_search" ? "Hada prépare la recherche" : "Hada réfléchit");
-    scheduleWaitingLabels(expectsSearchFlow);
+    setWaitingLabel(isRetrySearchFlow ? "Hada recherche les meilleurs prestataires" : "Hada réfléchit");
+    scheduleWaitingLabels(isRetrySearchFlow);
     setDraft("");
     setIsSubmitting(true);
 
@@ -153,10 +152,7 @@ export default function ChatPage() {
     }
 
     const controller = new AbortController();
-    const requestTimeout = window.setTimeout(
-      () => controller.abort(),
-      expectsSearchFlow ? SEARCH_CHAT_REQUEST_TIMEOUT_MS : NORMAL_CHAT_REQUEST_TIMEOUT_MS
-    );
+    const requestTimeout = window.setTimeout(() => controller.abort(), CHAT_REQUEST_TIMEOUT_MS);
 
     try {
       const response = await fetch(apiPath, {
@@ -169,10 +165,15 @@ export default function ChatPage() {
         signal: controller.signal
       });
 
-      const result = await response.json();
-      if (!response.ok) {
-        setMessages((current) => current.filter((message) => message.id !== placeholderId));
-        setBetaToast("Hada n'a pas pu finaliser cette réponse. Réessayez dans un instant.");
+      const result = await readJsonResponse<ChatPostResponse>(response);
+      if (!response.ok || !result?.assistantMessage) {
+        const recoveredMessages = accessToken ? await refreshMessagesFromServer(accessToken) : null;
+        const hasRecoveredAnswer = recoveredMessages ? hasAssistantAfterUserMessage(recoveredMessages, content) : false;
+
+        if (!hasRecoveredAnswer) {
+          setMessages((current) => current.filter((message) => message.id !== placeholderId));
+          setBetaToast(buildChatRequestErrorMessage(result?.error, response.status));
+        }
         setTypingMessageId(null);
         clearWaitingTimers();
         return;
@@ -198,8 +199,8 @@ export default function ChatPage() {
       if (!hasRecoveredAnswer) {
         setBetaToast(
           error instanceof DOMException && error.name === "AbortError"
-            ? "Hada prend un peu plus de temps. Si vous relancez, elle reprendra le dernier sujet."
-            : "Hada n'a pas pu finaliser cette réponse. Réessayez dans un instant."
+            ? "La réponse prend plus de temps que prévu. Relancez dans un instant, Hada gardera le fil."
+            : "La réponse n'est pas revenue correctement. Réessayez dans un instant."
         );
       }
     } finally {
@@ -216,7 +217,7 @@ export default function ChatPage() {
         }
       });
       if (!response.ok) return null;
-      const result = (await response.json()) as { messages: UiChatMessage[] };
+      const result = await readJsonResponse<{ messages: UiChatMessage[] }>(response);
       const nextMessages = (result.messages ?? []).map(normalizeMessage);
       setMessages(nextMessages);
       return nextMessages;
@@ -227,14 +228,8 @@ export default function ChatPage() {
 
   function scheduleWaitingLabels(isSearchFlow = false) {
     clearWaitingTimers();
-    waitingTimeoutRefs.current = isSearchFlow
-      ? [
-          window.setTimeout(() => setWaitingLabel("Hada prépare la recherche"), 2800),
-          window.setTimeout(() => setWaitingLabel("Recherche des prestataires en cours"), 9000),
-          window.setTimeout(() => setWaitingLabel("Création des fiches prestataires"), 18000),
-          window.setTimeout(() => setWaitingLabel("Encore quelques secondes pour fiabiliser les fiches"), 34000)
-        ]
-      : [];
+    setWaitingLabel(isSearchFlow ? "Hada recherche les meilleurs prestataires" : "Hada réfléchit");
+    waitingTimeoutRefs.current = [];
   }
 
   function clearWaitingTimers() {
@@ -292,7 +287,7 @@ export default function ChatPage() {
                 <HadaMark className="h-14 w-14" />
               </div>
               <div>
-                <p className="text-[18px] font-semibold text-[var(--hada-navy)]">Hada prépare la conversation</p>
+                <p className="text-[18px] font-semibold text-[var(--hada-navy)]">Hada réfléchit</p>
                 <p className="mt-1 text-[14px] text-[#877d7c]">Chargement des messages et de votre contexte mariage...</p>
               </div>
             </div>
@@ -563,38 +558,6 @@ function pickChunkSize(fullText: string, index: number) {
   return 8 + Math.round(Math.random() * 2);
 }
 
-function isLikelyExplicitSearchRequest(value: string) {
-  const normalized = normalizeForClientIntent(value);
-  if (!normalized || !hasClientVendorCategory(normalized) || isClientNonSearchInquiry(normalized)) return false;
-
-  const hasStrongSearchVerb =
-    /\b(cherche|chercher|recherche|rechercher|trouve|trouver|deniche|denicher|selectionne|selectionner|propose|proposer|recommande|recommander|liste|lister|lance|lancer|prepare|preparer)\b/.test(
-      normalized
-    );
-  const hasNeedPhrase =
-    /\b(j ai besoin|on a besoin|nous avons besoin|il me faut|il nous faut|je veux|on veut|nous voulons|je voudrais|on voudrait|nous voudrions)\b/.test(
-      normalized
-    );
-  const asksForFindingHelp =
-    /\b(aide moi a trouver|aidez moi a trouver|peux tu trouver|pouvez vous trouver|peux tu chercher|pouvez vous chercher|occupe toi de trouver|occupez vous de trouver)\b/.test(
-      normalized
-    );
-
-  return hasStrongSearchVerb || hasNeedPhrase || asksForFindingHelp;
-}
-
-function isClientNonSearchInquiry(value: string) {
-  return /\b(c est quoi|c quoi|qu est ce que|ca veut dire quoi|definition|explique|je veux comprendre|j aimerais comprendre|je veux savoir|j aimerais savoir|je ne comprends pas|a quoi ca sert|comment ca marche|tu connais|connais tu|avis|conseil|pourquoi|combien ca coute|budget moyen)\b/.test(
-    value
-  );
-}
-
-function hasClientVendorCategory(value: string) {
-  return /(lieu|domaine|chateau|salle|traiteur|photographe|photo|videaste|video|cameraman|cadreur|film|dj|musicien|groupe|chanteur|fleur|fleuriste|deco|decoration|robe|costume|transport|navette|chauffeur)/.test(
-    value
-  );
-}
-
 function hasAssistantAfterUserMessage(messages: UiChatMessage[], content: string) {
   const normalizedContent = normalizeForClientIntent(content);
   const userIndex = messages.findLastIndex((message) => message.role === "user" && normalizeForClientIntent(message.content) === normalizedContent);
@@ -614,6 +577,36 @@ function normalizeForClientIntent(value: string) {
 
 function getBetaBannerKey(userId: string) {
   return `hada:chat-beta-hidden:${userId}`;
+}
+
+type ChatPostResponse = {
+  assistantMessage?: UiChatMessage;
+  error?: string;
+};
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
+function buildChatRequestErrorMessage(error: string | undefined, status: number) {
+  if (status === 401) return "Votre session a expiré. Reconnectez-vous pour continuer.";
+  if (status === 503) return "Le service de réponse est momentanément indisponible. Réessayez dans un instant.";
+  if (status >= 500 || isTechnicalErrorMessage(error)) return "Le moteur Hada est momentanément indisponible. Réessayez dans un instant.";
+  return error || "La réponse n'est pas revenue correctement. Réessayez dans un instant.";
+}
+
+function readPositiveNumber(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isTechnicalErrorMessage(value: string | undefined) {
+  if (!value) return false;
+  return /fetch failed|ENOTFOUND|Supabase|Mistral|Google|environment variable|API|backend/i.test(value);
 }
 
 function parseMessageBlocks(content: string) {

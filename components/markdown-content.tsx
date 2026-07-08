@@ -91,9 +91,10 @@ function renderBlocks(content: string) {
       return;
     }
 
-    if (trimmed.startsWith("- ")) {
+    const listItems = readListItems(trimmed);
+    if (listItems) {
       flushParagraph();
-      list.push(trimmed.slice(2));
+      list.push(...listItems);
       return;
     }
 
@@ -117,6 +118,21 @@ function renderBlocks(content: string) {
   flushList();
 
   return blocks;
+}
+
+function readListItems(line: string) {
+  const markerMatch = line.match(/^([-*])\s+/);
+  if (!markerMatch) return null;
+
+  const marker = markerMatch[1];
+  const content = line.slice(markerMatch[0].length).trim();
+  if (!content) return [];
+
+  if (marker === "*") {
+    return content.split(/\s+\*\s+/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  return [content];
 }
 
 function renderInline(text: string): ReactNode[] {

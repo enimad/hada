@@ -1,4 +1,5 @@
 import { env } from "@/lib/env";
+import { looksLikeDirectoryPage } from "@/lib/directory-page-detector";
 import { collectDisplayImageUrls } from "@/lib/image-url";
 import type { VendorCandidateView, VendorCategory, VendorProfile, VendorProfileGeneratedFrom, WeddingProfile } from "@/lib/types";
 import type { VendorCatalogEntry } from "@/lib/vendor-catalog";
@@ -124,7 +125,7 @@ export async function normalizeVendorProfileWithMistral(input: NormalizeInput): 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), NORMALIZER_TIMEOUT_MS);
     const messages: MistralMessage[] = [
-      { role: "user", content: JSON.stringify(buildNormalizerPayload(input), null, 2) }
+      { role: "user", content: buildNormalizerUserMessage(input) }
     ];
 
     const response = await fetch("https://api.mistral.ai/v1/conversations", {
@@ -162,6 +163,15 @@ export async function normalizeVendorProfileWithMistral(input: NormalizeInput): 
       error: error instanceof Error ? error.message : "normalizer_error"
     };
   }
+}
+
+function buildNormalizerUserMessage(input: NormalizeInput) {
+  return [
+    "Consignes locales à appliquer impérativement :",
+    NORMALIZER_SYSTEM_PROMPT,
+    "Données à analyser :",
+    JSON.stringify(buildNormalizerPayload(input), null, 2)
+  ].join("\n\n");
 }
 
 export function buildFallbackVendorProfile(candidate: VendorCatalogEntry | VendorCandidateView): VendorProfile {
@@ -622,8 +632,9 @@ function normalizeGeneratedFrom(value: unknown, candidate: VendorCatalogEntry): 
 function estimateGeneratedFrom(candidate: VendorCatalogEntry | VendorCandidateView): VendorProfileGeneratedFrom {
   const source = candidate.sourceUrl ?? "";
   const website = candidate.website ?? "";
+  // Détection structurelle partagée (couvre pagesjaunes sans tiret, zankyou.*, formes d'URL/annuaire...).
+  if (source && looksLikeDirectoryPage({ url: source })) return "directory";
   if (source && website && getDomain(source) === getDomain(website)) return "official_site";
-  if (/mariages\.net|zankyou|mariage\.com|pages-jaunes|annuaire/i.test(source)) return "directory";
   return "mixed_sources";
 }
 

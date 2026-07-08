@@ -1,85 +1,70 @@
-# Chat V2 Hada
+# Chat V2 Hada — moteur LLM-first
 
-## Architecture
+## Principe
 
-Le chat V2 est organisé autour d'un orchestrateur serveur. Les modèles ne décident jamais seuls des actions persistantes.
+Le LLM est le décideur. À chaque tour, UN SEUL appel modèle (`buildHadaTurnPrompt`) produit à la fois :
 
-1. `ContextLoader` : la route charge l'utilisateur, le profil mariage, la conversation, les messages récents et les actions en attente.
-2. `Decision Contract` : `lib/server/chat-v2/contracts.ts` définit un contrat JSON unique pour Google et Mistral.
-3. `Model Router` : Google est utilisé pour l'analyse d'intention, Mistral sert de fallback technique. Une réponse JSON invalide déclenche le fallback.
-4. `Decision Validator` : le serveur normalise les intentions, bloque les recherches non explicites et donne priorité au profil.
-5. `Tool Executor` : la route exécute seulement les actions validées : proposition profil, écriture profil confirmée, recherche prestataire.
-6. `Response Composer` : la réponse visible utilise le même prompt Hada quel que soit le fournisseur.
+1. la classification d'intention du dernier message ;
+2. la réponse visible de Hada (`reply`).
 
-## Contrat De Sortie
+Le serveur ne reclasse jamais la décision par regex. Il applique uniquement une **porte d'exécution** (`applyExecutionGate`, `lib/server/chat-v2/contracts.ts`) qui contrôle les actions coûteuses ou risquées.
 
-Le modèle doit retourner uniquement un JSON avec :
+## Architecture d'un tour
 
-- `intents`
-- `needs_clarification`
-- `clarification_question`
-- `tool_calls`
-- `user_reply`
-- `profile_updates`
-- `search_query`
-- `safety_flags`
-- `memory_notes`
+1. `ContextLoader` : la route (`app/api/chat-v2/route.ts`) charge l'utilisateur, le profil mariage, la conversation, les messages récents et les états en attente.
+2. `Turn Decision` : appel unique au modèle (Mistral en JSON mode, Google optionnel en fallback via `HADA_AI_PROVIDER_ORDER`) avec : persona Hada + politique de routage + profil mariage + historique compacté (10 messages) + états serveur.
+3. `Execution Gate` : le serveur vérifie que l'action décidée est légitime (voir plus bas), sans jamais reclasser advice/chat par regex.
+4. `Tool Executor` : la route exécute seulement les actions validées : proposition de recherche, recherche prestataire, écriture profil confirmée.
+5. `Response Composer` : la reply du LLM est utilisée telle quelle (sanitizée) pour advice/chat/deny/proposition ; les annonces de recherche et questions de clarification restent générées par un appel dédié.
 
-Le serveur convertit ensuite ce contrat vers l'ancien format interne `IntentClassification` pour préserver la compatibilité avec l'UI actuelle.
+## Intentions
+
+- `advice` : conseil, méthode, critères, comparaison, explication, prix moyens.
+- `chat` : discussion naturelle, émotions, inspiration générale.
+- `search_request` : demande explicite de prestataires concrets, quelle que soit la formulation.
+- `search_detail` : critère apporté pendant une collecte ouverte.
+- `confirm` / `deny` : acceptation ou refus de la dernière proposition (recherche proposée, collecte en cours).
+- `profile_update` : information durable du mariage à enregistrer (confirmation demandée avant écriture).
+- `unclear` : message trop faible pour être routé.
+
+## Politique de recherche : proposer + confirmer
+
+- Demande explicite (« cherche-moi des traiteurs à Lyon », « il nous faut un DJ, tu peux t'en occuper ? ») → `search_request`, la collecte/recherche démarre directement.
+- Besoin ambigu (« il nous faudrait un photographe ») → `propose_search: true` : Hada répond puis propose de lancer la recherche. L'état `chatV2PendingSearchProposal` est stocké dans `messages.metadata_json`.
+- « oui / vas-y / ok lance » avec proposition en attente → `confirm` → la recherche démarre avec le brief de la proposition.
+- Une proposition ignorée reste confirmable quelques tours (fenêtre de 12 messages) ; un `deny` la clôture.
+- Type de prestataire non couvert par le catalogue (photobooth, pâtissier...) → réponse honnête listant les types couverts, jamais de recherche fantôme.
+
+## Porte d'exécution (seuls contrôles serveur)
+
+- message à très faible signal → `unclear` ;
+- `confirm`/`deny` sans proposition ni collecte en attente → `chat` ;
+- `search_detail` sans collecte ni proposition → `chat` ;
+- catégorie non couverte → `advice` + réponse honnête ;
+- `search_request` avec confiance < 0,55 → converti en proposition ;
+- `profile_update` avec confiance < 0,55 → ignoré (discussion) ;
+- une recherche ne s'exécute que pour `search_request`, `confirm` (avec état en attente) ou `search_detail` (avec collecte).
 
 ## Profil
 
-Le profil mariage reste la source de vérité persistante. Une mise à jour est appliquée uniquement après confirmation utilisateur.
-
-Le serveur :
-
-- applique uniquement les champs présents dans le patch ;
-- n'écrase pas les autres champs ;
-- demande confirmation en cas de nouvelle information ou de contradiction ;
-- journalise la modification dans `messages.metadata_json.chatV2ProfileChangeLog`.
-
-## Recherche
-
-Une recherche prestataire part uniquement si l'intention est explicite ou si une collecte de recherche déjà ouverte reçoit un détail utile.
-
-Exemples qui ne déclenchent pas de recherche :
-
-- `c'est quoi un photobooth ?`
-- `tu me conseilles quoi pour choisir un traiteur ?`
-- `combien coûte un photographe ?`
-
-Exemples qui déclenchent une recherche :
-
-- `cherche-moi des traiteurs italiens à Marseille`
-- `trouve des lieux avec étang autour de Paris`
-- `liste-moi des photographes disponibles en Bretagne`
+Inchangé : le profil mariage est la source de vérité. Toute mise à jour passe par une confirmation explicite (`chatV2PendingProfileUpdate`, réponse oui/non), est appliquée champ par champ et journalisée dans `messages.metadata_json.chatV2ProfileChangeLog`.
 
 ## Fallback
 
-Le fallback est invisible pour l'utilisateur :
+- Le JSON invalide ou l'échec du fournisseur déclenche le fournisseur suivant, puis le **mode dégradé** : `heuristicClassificationV2` (regex élargies : « il nous faudrait », « on a besoin de », confirmations, refus, mises à jour profil chiffrées) + textes de secours statiques.
+- Le fallback est invisible : mêmes états, mêmes contrats.
+- `createChatV2FallbackResponse` couvre les erreurs serveur imprévues.
 
-- si le fournisseur primaire échoue techniquement ;
-- si le JSON est invalide ;
-- si la réponse Google est interrompue ;
-- si une erreur 429 survient après retry.
+## Tests
 
-Le fournisseur secondaire reçoit le même prompt, le même contrat et les mêmes contraintes de ton.
+- `npm run test:intent` : ~40 cas déterministes (`CHAT_V2_GUARD_TEST_CASES`) qui valident le mode dégradé + la porte d'exécution, sans appel réseau.
+- `npm run eval:intent` : évaluation live du routeur réel contre l'API Mistral (`CHAT_V2_LLM_EVAL_CASES`, `scripts/eval-intent-live.mjs`). Cible : ≥ 90 % de précision sur les cas évalués. Attention au rate limit du compte Mistral (le script espace et rejoue les cas limités).
 
-## Cas Limites
+## Bugs prévenus par conception
 
-Les cas limites principaux sont déclarés dans `CHAT_V2_GUARD_TEST_CASES` :
-
-- message très court ;
-- conseil prestataire sans recherche ;
-- recherche explicite ;
-- détail naturel pendant collecte ;
-- question de compréhension prestataire.
-
-## Bugs Probables À Prévenir
-
-- Recherche trop agressive : bloquée par `isVendorAdviceDiscussion` et `hasExplicitSearchIntent`.
-- JSON modèle invalide : bloqué par `parseHadaDecisionResponse` puis fallback.
-- Ecrasement profil : impossible hors patch confirmé.
-- Contradiction profil/recherche : le profil passe avant la recherche.
-- Fallback visible : même prompt visible et même contrat pour tous les modèles.
-- Réponse outil non exécuté : Hada ne confirme une action qu'après exécution serveur.
+- Recherche trop agressive : porte d'exécution + politique proposer/confirmer.
+- Recherche jamais déclenchée malgré une demande claire (défaut historique des regex) : le LLM décide, plus de reclassement regex.
+- Réponses sans mémoire : l'appel unique reçoit l'historique compacté.
+- JSON modèle invalide : JSON mode + `parseHadaDecisionResponse` tolérant + fallback.
+- Écrasement profil : impossible hors patch confirmé.
+- Réponse annonçant une action non faite : les annonces de recherche ne sont rédigées qu'après exécution serveur.

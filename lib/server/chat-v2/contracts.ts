@@ -1,21 +1,26 @@
-import { buildWeddingSummary } from "@/lib/prompts";
-import { normalizeSearchCategory } from "@/lib/server/hada";
-import type { UiChatMessage, VendorCategory, WeddingChecklistPatch, WeddingProfile } from "@/lib/types";
-import { normalizeWeddingChecklist } from "@/lib/wedding-checklist";
+import type { UiChatMessage, VendorCategory, WeddingChecklistPatch } from "@/lib/types";
 
-export type ChatV2Intent = "wedding_chat" | "profile_update" | "vendor_search" | "vendor_search_details" | "off_topic" | "unclear";
+/**
+ * Chat V2 — contrat LLM-first.
+ *
+ * Le LLM est le décideur : il classe l'intention ET rédige la réponse visible
+ * dans un seul appel JSON. Le serveur ne reclasse jamais par regex ; il applique
+ * seulement une porte d'exécution (applyExecutionGate) qui contrôle les actions
+ * coûteuses (recherche prestataire, écriture profil).
+ *
+ * Les heuristiques regex de ce fichier ne servent plus qu'au mode dégradé
+ * (heuristicClassificationV2), utilisé uniquement quand le LLM est indisponible.
+ */
 
-export type HadaDecisionIntent =
-  | "wedding_chat"
-  | "wedding_advice"
-  | "profile_update_request"
-  | "profile_update_confirmation"
-  | "vendor_search_request"
-  | "vendor_search_details"
-  | "off_topic"
+export type ChatV2Intent =
+  | "advice"
+  | "chat"
+  | "search_request"
+  | "search_detail"
+  | "confirm"
+  | "deny"
+  | "profile_update"
   | "unclear";
-
-export type HadaToolCallType = "propose_profile_update" | "confirm_profile_update" | "vendor_search" | "none";
 
 export type ProfileUpdatePatch = {
   wedding_date?: string | null;
@@ -41,11 +46,16 @@ export type VendorSearchBrief = {
 export type IntentClassification = {
   intent: ChatV2Intent;
   confidence: number;
-  explicitVendorSearch: boolean;
+  /** Réponse visible rédigée par le LLM dans le même appel. */
+  reply: string | null;
+  /** Le couple exprime un besoin prestataire sans demande explicite : Hada propose la recherche. */
+  proposeSearch: boolean;
+  vendorSearch: VendorSearchBrief | null;
+  /** Type de prestataire demandé mais non couvert par le catalogue (photobooth, pâtissier...). */
+  unsupportedCategoryLabel: string | null;
   profilePatch: ProfileUpdatePatch | null;
   profileSummary: string | null;
-  vendorSearch: VendorSearchBrief | null;
-  answerGuidance: string | null;
+  reason: string | null;
 };
 
 export type PendingSearchSnapshot = {
@@ -54,132 +64,184 @@ export type PendingSearchSnapshot = {
   turns: number;
 } | null;
 
+export type PendingProposalSnapshot = {
+  brief: VendorSearchBrief;
+  initialMessage?: string | null;
+} | null;
+
 export type HadaDecision = {
-  intents: Array<{
-    type: HadaDecisionIntent;
-    confidence: number;
-    priority: number;
-  }>;
-  needs_clarification: boolean;
-  clarification_question: string | null;
-  tool_calls: Array<{
-    type: HadaToolCallType;
-    reason: string;
-    payload: Record<string, unknown>;
-  }>;
-  user_reply: string;
-  profile_updates: {
-    requires_confirmation: boolean;
-    summary: string | null;
-    patch: ProfileUpdatePatch | null;
-  };
-  search_query: VendorSearchBrief & {
-    explicit: boolean;
-  } | null;
-  safety_flags: string[];
-  memory_notes: Array<{
-    type: "preference" | "constraint" | "emotion" | "decision";
-    value: string;
-    confidence: number;
-  }>;
+  intent: ChatV2Intent;
+  confidence: number;
+  reply: string | null;
+  proposeSearch: boolean;
+  search: (VendorSearchBrief & { rawCategoryLabel: string | null }) | null;
+  profilePatch: ProfileUpdatePatch | null;
+  profileSummary: string | null;
+  reason: string | null;
 };
 
-const HADA_DECISION_SCHEMA = [
+export const SUPPORTED_CATEGORY_LABELS =
+  "lieu de réception, traiteur, photographe, vidéaste, DJ, musicien/groupe live, fleuriste, décoration, robe de mariée, costume, transport";
+
+const TURN_OUTPUT_SCHEMA = [
   "{",
-  '  "intents": [{"type": "wedding_chat|wedding_advice|profile_update_request|profile_update_confirmation|vendor_search_request|vendor_search_details|off_topic|unclear", "confidence": 0.0, "priority": 1}],',
-  '  "needs_clarification": false,',
-  '  "clarification_question": null,',
-  '  "tool_calls": [{"type": "propose_profile_update|confirm_profile_update|vendor_search|none", "reason": "", "payload": {}}],',
-  '  "user_reply": "",',
-  '  "profile_updates": {"requires_confirmation": false, "summary": null, "patch": null},',
-  '  "search_query": {"explicit": false, "category": null, "location": null, "style": null, "constraints": null, "budget": null, "guest_count": null, "search_query": null},',
-  '  "safety_flags": [],',
-  '  "memory_notes": [{"type": "preference|constraint|emotion|decision", "value": "", "confidence": 0.0}]',
+  '  "intent": "advice|chat|search_request|search_detail|confirm|deny|profile_update|unclear",',
+  '  "confidence": 0.0,',
+  '  "reason": "justification interne courte",',
+  '  "reply": "réponse visible de Hada au couple",',
+  '  "propose_search": false,',
+  '  "search": {"category": null, "location": null, "style": null, "constraints": null, "budget": null, "guest_count": null, "search_query": null},',
+  '  "profile_patch": null,',
+  '  "profile_summary": null',
   "}"
 ].join("\n");
 
-export function buildHadaDecisionPrompt(input: {
-  profile: Partial<WeddingProfile> | null;
-  messages: UiChatMessage[];
-  pendingSearch: PendingSearchSnapshot;
-}) {
-  const recent = input.messages
-    .slice(-10)
-    .map((message) => `${message.role === "user" ? "Couple" : "Hada"}: ${message.content.replace(/\s+/g, " ").slice(0, 360)}`)
-    .join("\n");
+const HADA_PERSONA_LINES = [
+  "Tu es Hada, une wedding planner virtuelle haut de gamme : chaleureuse, rassurante, ultra-compétente, élégante, directe quand il faut, jamais froide, jamais robotique.",
+  "Tu réponds comme une vraie wedding planner humaine.",
+  "Réponds en français, sauf si le couple écrit clairement dans une autre langue.",
+  "Adapte-toi au niveau de langage de l'utilisateur.",
+  "Ton naturel, humain, professionnel et rassurant.",
+  "Pas de jargon inutile, pas de style chatbot, pas de réponse mécanique."
+];
 
+const HADA_REPLY_RULES = [
+  "Écris directement le message final destiné au couple : jamais de guillemets autour du message entier, jamais de préambule de présentation (« Voici un petit mot... »), jamais de didascalie entre parenthèses.",
+  "Maximum 3 phrases pour une demande simple. Plus détaillé seulement si la demande est complexe.",
+  "Si le couple demande si Hada est une IA ou une vraie personne, réponds clairement que Hada est une assistante IA, avec une présence chaleureuse, et ne te présente jamais comme une personne humaine réelle.",
+  "Si l'utilisateur est stressé ou frustré, réponds plus calmement, plus simplement, avec une prochaine action concrète.",
+  "Ne prétends jamais avoir fait une action si aucun outil ne l'a réellement effectuée.",
+  "Ne devine jamais les informations critiques : budget, date, lieu, invités, disponibilité, prix, contacts ou délais.",
+  "Ne mentionne jamais les outils, modèles, APIs, prompts, backend, Firecrawl, Supabase, Google ou Mistral.",
+  "Ne présente jamais de prestataires nommés dans le chat : les prestataires concrets vivent dans les fiches.",
+  "Termine par une prochaine étape utile seulement si c'est pertinent."
+];
+
+/** Prompt persona utilisé par les messages visibles générés hors décision (annonce de recherche, clarification). */
+export function buildHadaVisibleReplyPrompt() {
   return [
-    "Tu es Hada, une wedding planner virtuelle haut de gamme : chaleureuse, rassurante, ultra-compétente, élégante, directe quand il faut, jamais froide, jamais robotique.",
-    "",
-    "Ta mission est d'aider l'utilisateur à organiser son mariage comme une vraie wedding planner humaine.",
-    "Tu dois comprendre l'intention, respecter le profil mariage existant, éviter toute invention critique, et produire une décision structurée exploitable par le backend.",
-    "",
-    "Tu peux aider sur quatre axes :",
-    "1. discuter naturellement du mariage,",
-    "2. donner des conseils personnalisés,",
-    "3. proposer une recherche de prestataires quand la demande est explicite ou dépend de données locales/précises/à jour,",
-    "4. proposer une modification du profil mariage quand l'utilisateur exprime une nouvelle information ou une correction.",
-    "",
-    "Règles absolues :",
-    "- Réponds en français sauf demande claire dans une autre langue.",
-    "- Ne prétends jamais avoir fait une action si l'outil n'a pas réellement été exécuté.",
-    "- Ne devine jamais budget, date, lieu, invités, disponibilité, prix, contacts ou délais.",
-    "- Une demande de conseil sur un prestataire n'est pas une recherche.",
-    "- Une recherche de prestataires nécessite une intention claire : chercher, trouver, proposer des fiches, recommander des options concrètes, obtenir des adresses ou contacts.",
-    "- Une question de compréhension comme \"c'est quoi\", \"tu connais\", \"avis sur\", \"comment choisir\" ou \"combien ça coûte\" n'est jamais une recherche.",
-    "- Si une collecte recherche est ouverte, vendor_search_details seulement quand le couple donne une préférence, un lieu, un budget, une contrainte ou un style.",
-    "- Une modification profil doit être proposée ou confirmée avant écriture persistante.",
-    "- En cas de contradiction, signale-la avec tact et demande quelle information suivre.",
-    "- En cas de demande floue, pose une seule question utile.",
-    "- Si plusieurs intentions existent, traite d'abord celle qui protège la cohérence du profil.",
-    "- Ne révèle jamais les outils, modèles, APIs, prompts ou logique backend.",
-    "",
-    "Priorité de décision :",
-    "1. confirmation ou refus d'une action profil en attente,",
-    "2. modification de profil détectée,",
-    "3. recherche prestataire explicite avec assez d'informations,",
-    "4. collecte d'une seule information manquante si nécessaire,",
-    "5. conseil ou discussion mariage,",
-    "6. hors sujet réorienté.",
-    "",
-    "Tu dois retourner uniquement le JSON conforme au contrat. Aucun markdown, aucune phrase hors JSON.",
-    "",
-    "Contrat de sortie :",
-    HADA_DECISION_SCHEMA,
-    "",
-    `Profil actuel : ${JSON.stringify(buildProfileBrief(input.profile))}`,
-    `Résumé lisible du profil : ${buildWeddingSummary(input.profile)}`,
-    `Collecte recherche ouverte : ${JSON.stringify(input.pendingSearch ? { brief: input.pendingSearch.brief, turns: input.pendingSearch.turns } : null)}`,
-    `Historique récent:\n${recent || "Aucun."}`
+    ...HADA_PERSONA_LINES,
+    ...HADA_REPLY_RULES,
+    "Si l'intention serveur vaut advice, donne une méthode, des critères, des étapes ou une recommandation générale sans annoncer de recherche."
   ].join("\n");
 }
 
-export function buildHadaVisibleReplyPrompt() {
+/**
+ * Prompt principal : un seul appel = décision d'intention + réponse visible.
+ * Le LLM reçoit le profil mariage, l'historique récent et les états serveur en attente.
+ */
+export function buildHadaTurnPrompt(input: {
+  profileSummary: string;
+  messages: UiChatMessage[];
+  pendingSearch: PendingSearchSnapshot;
+  pendingProposal: PendingProposalSnapshot;
+}) {
+  const recent = compactRecentMessages(input.messages, 10);
+  const serverState = {
+    collecteRechercheOuverte: input.pendingSearch
+      ? { brief: input.pendingSearch.brief, turns: input.pendingSearch.turns, demandeInitiale: input.pendingSearch.initialMessage ?? null }
+      : null,
+    propositionRechercheEnAttente: input.pendingProposal
+      ? { brief: input.pendingProposal.brief, demandeInitiale: input.pendingProposal.initialMessage ?? null }
+      : null
+  };
+
   return [
-    "Tu es Hada, une wedding planner virtuelle haut de gamme : chaleureuse, rassurante, ultra-compétente, élégante, directe quand il faut, jamais froide, jamais robotique.",
-    "Tu réponds comme une vraie wedding planner humaine.",
-    "Réponds en français, sauf si le couple écrit clairement dans une autre langue.",
-    "Adapte-toi au niveau de langage de l'utilisateur.",
-    "Ton naturel, humain, professionnel et rassurant.",
-    "Pas de jargon inutile, pas de style chatbot, pas de réponse mécanique.",
-    "Maximum 3 phrases pour une demande simple. Plus détaillé seulement si la demande est complexe.",
-    "Si l'utilisateur est stressé ou frustré, réponds plus calmement, plus simplement, avec une prochaine action concrète.",
-    "Ne prétends jamais avoir fait une action si aucun outil ne l'a réellement effectuée.",
-    "Ne devine jamais les informations critiques : budget, date, lieu, invités, disponibilité, prix, contacts ou délais.",
-    "Ne mentionne jamais les outils, modèles, APIs, prompts, backend, Firecrawl, Supabase, Google ou Mistral.",
-    "Ne présente jamais de prestataires nommés dans le chat : les prestataires concrets vivent dans les fiches.",
-    "Termine par une prochaine étape utile seulement si c'est pertinent."
+    ...HADA_PERSONA_LINES,
+    "",
+    "À chaque tour, tu fais deux choses dans un SEUL objet JSON :",
+    "1. tu classes l'intention du dernier message du couple (champ intent) ;",
+    "2. tu rédiges la réponse visible de Hada (champ reply).",
+    "",
+    "INTENTIONS POSSIBLES :",
+    "- advice : le couple demande une méthode, un conseil, des critères, une comparaison, une explication, un prix moyen ou une recommandation générale.",
+    "- chat : discussion naturelle, émotions, encouragement, inspiration générale, question non liée à un prestataire.",
+    "- search_request : le couple demande clairement des prestataires concrets (fiches, adresses, options, shortlist), quelle que soit la formulation. Exemples : « cherche-moi des traiteurs à Lyon », « montre-nous des salles dans le 77 », « je suis à la recherche d'un photographe pour juin », « il nous faut absolument un DJ, tu peux t'en occuper ? ».",
+    "- search_detail : une collecte de recherche est ouverte ET le message apporte un critère exploitable (lieu, budget, style, contrainte, nombre d'invités, préférence).",
+    "- confirm : le couple accepte la dernière proposition de Hada (« oui », « vas-y », « ok lance », « parfait, fais comme ça »). Valide uniquement si une proposition ou une collecte est réellement en attente dans l'état serveur.",
+    "- deny : le couple refuse ou annule la proposition ou la collecte en cours (« non », « laisse tomber », « on annule », « pas maintenant »).",
+    "- profile_update : le couple donne ou corrige une information durable de son mariage (date, ville, région, nombre d'invités, budget global), sans demander de recherche.",
+    "- unclear : message vide, trop court ou impossible à interpréter.",
+    "",
+    "PROPOSE_SEARCH :",
+    "- Mets propose_search à true UNIQUEMENT quand le couple exprime un vrai besoin prestataire sans demander explicitement les résultats (« il nous faudrait un photographe », « on n'a toujours pas de traiteur »). Dans ce cas intent = chat ou advice, et reply doit répondre utilement PUIS proposer en une phrase de lancer la recherche.",
+    "- Si la demande de prestataires est explicite → intent = search_request et propose_search = false.",
+    "- En cas d'hésitation entre search_request et une proposition → choisis la proposition (propose_search = true).",
+    "- Jamais de propose_search pour une simple question de conseil ou de compréhension.",
+    "",
+    "CHAMP search :",
+    "- Renseigne search uniquement pour search_request, search_detail, confirm, ou quand propose_search = true. Sinon laisse null.",
+    `- category : le type de prestataire, si possible parmi : ${SUPPORTED_CATEGORY_LABELS}.`,
+    "- Si le besoin ne correspond à aucun de ces types (photobooth, pâtissier, maquilleuse, officiant...), recopie le mot exact du couple dans category : le serveur répondra honnêtement que ce type n'est pas encore couvert. Dans ce cas intent = advice, propose_search = false, et reply doit le dire honnêtement + donner un conseil pour le trouver soi-même.",
+    "- location, style, constraints, budget, guest_count : uniquement ce que le couple a réellement exprimé (dans ce message ou l'historique). N'invente jamais un critère.",
+    "- search_query : pour search_request, search_detail et confirm, rédige une requête web courte et efficace (5 à 10 mots, sans phrase), comme un pro du sourcing. Exemple : « traiteur mariage cuisine du monde région parisienne ». Jamais la phrase du couple telle quelle.",
+    "",
+    "CHAMP reply (réponse visible) :",
+    ...HADA_REPLY_RULES,
+    "- Si intent = search_request, search_detail ou confirm : laisse reply vide (\"\"), le serveur rédige lui-même l'annonce de recherche.",
+    "- Si intent = profile_update : laisse reply vide (\"\"), le serveur demande lui-même la confirmation.",
+    "- Si propose_search = true : reply répond d'abord utilement, puis propose clairement la recherche (« Voulez-vous que je lance une recherche de photographes autour de Nantes ? »).",
+    "- Si intent = deny : reply prend acte simplement et propose une suite utile.",
+    "- Ta reply ne doit JAMAIS promettre une action que le serveur ne fera pas à ce tour : n'écris « je lance la recherche », « je vais explorer des profils » ou « j'élargis la zone » QUE si intent = search_request/search_detail/confirm (le serveur agit) ou si propose_search = true (la proposition attend un oui). Sinon reformule sans promesse.",
+    "- Si une collecte est ouverte et que le couple donne un critère (style, budget, zone, « peu importe »...), c'est search_detail : le serveur relance la recherche avec ce critère.",
+    "",
+    "CHAMP profile_patch :",
+    "- Uniquement pour profile_update. Champs autorisés : wedding_date (format YYYY-MM-DD), wedding_period_text, city, region, country, guest_count, budget_max.",
+    "- N'inclus que les champs que le couple donne ou corrige. Le serveur demandera toujours confirmation avant d'écrire.",
+    "- profile_summary : résumé court de la mise à jour (« le nombre d'invités passe à 150 »).",
+    "",
+    "EXEMPLES DE CLASSEMENT :",
+    "- « Tu me conseilles quoi pour trouver le bon traiteur ? » → advice, propose_search false.",
+    "- « Comment choisir un lieu de mariage ? » → advice.",
+    "- « Combien coûte un photographe ? » → advice.",
+    "- « Trouve-moi des traiteurs italiens à Marseille » → search_request (category traiteur, location Marseille).",
+    "- « Tu peux nous montrer des salles dans le 77 ? » → search_request (category lieu, location 77).",
+    "- « Je suis à la recherche d'un traiteur libanais » → search_request (category traiteur, style libanais).",
+    "- « Il nous faudrait un photographe pour juin à Nantes » → chat, propose_search true (category photographe, location Nantes).",
+    "- « On aurait besoin d'un DJ sur Toulouse, tu peux nous aider ? » → chat, propose_search true.",
+    "- « On n'a toujours pas de fleuriste... » → chat, propose_search true.",
+    "- Proposition en attente + « Oui, lance la recherche » → confirm.",
+    "- Proposition en attente + « vas-y » → confirm.",
+    "- Proposition en attente + « non laisse tomber » → deny.",
+    "- Collecte ouverte + « plutôt moderne, budget 4000 euros » → search_detail.",
+    "- Collecte ouverte + « comment je choisis entre deux traiteurs ? » → advice (la question passe avant la collecte).",
+    "- Collecte ouverte + « en fait on annule » → deny.",
+    "- « Finalement on sera 150 » → profile_update (guest_count 150).",
+    "- « Notre budget global est plutôt de 25 000 € » → profile_update (budget_max 25000).",
+    "- « Cherche-moi des idées de décoration champêtre » → chat (inspiration, pas de prestataire concret).",
+    "- « C'est quoi un photobooth ? » → advice.",
+    "- « Un pâtissier pour le wedding cake, t'as des adresses ? » → advice, category « pâtissier » (type non couvert : reply honnête + conseil), propose_search false.",
+    "- « Tu es une IA ou une vraie personne ? » → chat.",
+    "",
+    "RÈGLES DE SORTIE :",
+    "- Retourne UNIQUEMENT le JSON, sans markdown, sans texte autour.",
+    "- confidence entre 0 et 1 : ta certitude sur intent.",
+    "",
+    "CONTRAT DE SORTIE JSON :",
+    TURN_OUTPUT_SCHEMA,
+    "",
+    `PROFIL MARIAGE ACTUEL : ${input.profileSummary}`,
+    `ÉTAT SERVEUR : ${JSON.stringify(serverState)}`,
+    `HISTORIQUE RÉCENT :\n${recent || "Aucun."}`
   ].join("\n");
 }
 
 export function parseHadaDecisionResponse(value: string | null): HadaDecision | null {
   if (!value) return null;
+
+  const direct = tryParseJson(value);
+  if (direct) return normalizeTurnDecision(direct);
+
   const match = value.match(/\{[\s\S]*\}/);
   if (!match) return null;
+  const extracted = tryParseJson(match[0]);
+  return extracted ? normalizeTurnDecision(extracted) : null;
+}
 
+function tryParseJson(value: string): Record<string, unknown> | null {
   try {
-    const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-    return normalizeHadaDecision(parsed);
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
   }
@@ -190,173 +252,187 @@ export function decisionToIntentClassification(
   input: {
     userText: string;
     pendingSearch: PendingSearchSnapshot;
+    pendingProposal: PendingProposalSnapshot;
   }
 ): IntentClassification {
-  const hasProfilePatch = Boolean(decision.profile_updates.patch);
-  const hasProfileTool = decision.tool_calls.some((tool) => tool.type === "propose_profile_update" || tool.type === "confirm_profile_update");
-  const hasProfileIntent =
-    hasProfileTool || decision.intents.some((intent) => intent.type === "profile_update_request" || intent.type === "profile_update_confirmation");
-  const hasVendorTool = decision.tool_calls.some((tool) => tool.type === "vendor_search");
-  const hasVendorIntent = decision.intents.some((intent) => intent.type === "vendor_search_request" || intent.type === "vendor_search_details");
-  const hasOffTopic = decision.intents.some((intent) => intent.type === "off_topic");
-  const hasUnclear = decision.intents.some((intent) => intent.type === "unclear");
-  const searchFromDecision = decision.search_query ? searchQueryToBrief(decision.search_query) : null;
-  const searchFromText = extractSearchDetails(input.userText);
-  const mergedSearch = normalizeSearchBrief({
-    ...searchFromDecision,
-    ...searchFromText,
-    category: searchFromDecision?.category ?? searchFromText.category ?? null
-  });
-  const hasSearchDetails = Boolean(
-    mergedSearch.category ||
-      mergedSearch.location ||
-      mergedSearch.style ||
-      mergedSearch.constraints ||
-      mergedSearch.budget ||
-      mergedSearch.guestCount ||
-      mergedSearch.searchQuery
-  );
-  const explicitVendorSearch = Boolean(decision.search_query?.explicit || hasVendorTool || hasExplicitSearchIntent(input.userText));
+  const isSearchRelevant =
+    decision.intent === "search_request" || decision.intent === "search_detail" || decision.intent === "confirm" || decision.proposeSearch;
 
-  let intent: ChatV2Intent = "wedding_chat";
-  if (hasProfilePatch && hasProfileIntent) {
-    intent = "profile_update";
-  } else if (input.pendingSearch && hasVendorIntent && hasSearchDetails) {
-    intent = "vendor_search_details";
-  } else if (hasVendorIntent || explicitVendorSearch) {
-    intent = explicitVendorSearch || input.pendingSearch ? "vendor_search" : "wedding_chat";
-  } else if (hasOffTopic) {
-    intent = "off_topic";
-  } else if (hasUnclear || decision.needs_clarification) {
-    intent = "unclear";
-  }
+  // Le LLM extrait les critères ; les regex ne servent qu'à compléter les trous (budget chiffré, invités...).
+  const textDetails = extractSearchDetails(input.userText);
+  const search = isSearchRelevant
+    ? normalizeSearchBrief({
+        category: decision.search?.category ?? textDetails.category ?? null,
+        location: decision.search?.location ?? textDetails.location ?? null,
+        style: decision.search?.style ?? textDetails.style ?? null,
+        constraints: decision.search?.constraints ?? textDetails.constraints ?? null,
+        budget: decision.search?.budget ?? textDetails.budget ?? null,
+        guestCount: decision.search?.guestCount ?? textDetails.guestCount ?? null,
+        searchQuery: decision.search?.searchQuery ?? null
+      })
+    : null;
 
   return {
-    intent,
-    confidence: Math.max(...decision.intents.map((item) => item.confidence), 0.45),
-    explicitVendorSearch,
-    profilePatch: hasProfilePatch ? decision.profile_updates.patch : null,
-    profileSummary: decision.profile_updates.summary,
-    vendorSearch: hasSearchDetails ? mergedSearch : null,
-    answerGuidance: decision.needs_clarification ? decision.clarification_question : decision.user_reply || null
+    intent: decision.intent,
+    confidence: clampConfidence(decision.confidence),
+    reply: decision.reply,
+    proposeSearch: decision.proposeSearch,
+    vendorSearch: search && hasAnySearchField(search) ? search : null,
+    unsupportedCategoryLabel: isSearchRelevant && !decision.search?.category ? (decision.search?.rawCategoryLabel ?? null) : null,
+    profilePatch: decision.intent === "profile_update" ? decision.profilePatch : null,
+    profileSummary: decision.intent === "profile_update" ? decision.profileSummary : null,
+    reason: decision.reason
   };
 }
 
-export function applyChatV2DecisionGuards(
+/**
+ * Porte d'exécution serveur. Ne reclasse JAMAIS une intention par regex :
+ * elle vérifie seulement qu'une action coûteuse (recherche, profil) est légitime
+ * dans l'état courant, et dégrade proprement sinon.
+ */
+export function applyExecutionGate(
   classification: IntentClassification,
   input: {
     userText: string;
     pendingSearch: PendingSearchSnapshot;
+    pendingProposal: PendingProposalSnapshot;
   }
 ): IntentClassification {
-  const guarded = { ...classification };
-  const category = normalizeSearchCategory(input.userText);
+  const gated = { ...classification };
 
   if (isLowSignalMessage(input.userText)) {
     return {
-      ...guarded,
+      ...gated,
       intent: "unclear",
-      explicitVendorSearch: false,
+      proposeSearch: false,
       vendorSearch: null,
-      answerGuidance: "Le message est trop court ou trop faible. Demande simplement ce que le couple veut faire avancer."
+      profilePatch: null,
+      profileSummary: null,
+      reason: "low_signal"
     };
   }
 
-  if (isVendorAdviceDiscussion(input.userText)) {
+  // Rien à confirmer ou refuser : on retombe en discussion.
+  if (gated.intent === "confirm" && !input.pendingProposal && !input.pendingSearch) {
+    return { ...gated, intent: "chat", vendorSearch: null, reason: "confirm_without_pending" };
+  }
+  if (gated.intent === "deny" && !input.pendingProposal && !input.pendingSearch) {
+    return { ...gated, intent: "chat", proposeSearch: false, vendorSearch: null, reason: "deny_without_pending" };
+  }
+
+  // search_detail n'a de sens que pendant une collecte ou une proposition.
+  if (gated.intent === "search_detail" && !input.pendingSearch && !input.pendingProposal) {
+    return { ...gated, intent: "chat", vendorSearch: null, reason: "search_detail_without_collect" };
+  }
+
+  // Type de prestataire non couvert : réponse honnête, jamais de recherche.
+  if ((isSearchExecutionIntent(gated.intent) || gated.proposeSearch) && gated.unsupportedCategoryLabel) {
     return {
-      ...guarded,
-      intent: "wedding_chat",
-      explicitVendorSearch: false,
+      ...gated,
+      intent: "advice",
+      proposeSearch: false,
       vendorSearch: null,
-      answerGuidance:
-        "Le couple veut discuter ou recevoir un conseil sur un prestataire. Réponds utilement sans lancer de recherche, puis propose de chercher seulement si le couple le souhaite explicitement."
+      reason: "unsupported_category"
     };
   }
 
-  if (isNonSearchInquiry(input.userText)) {
-    return {
-      ...guarded,
-      intent: category ? "wedding_chat" : guarded.intent === "off_topic" ? "off_topic" : "wedding_chat",
-      explicitVendorSearch: false,
-      vendorSearch: null
-    };
+  // Recherche incertaine : on propose au lieu d'exécuter (protège le quota).
+  if (gated.intent === "search_request" && gated.confidence < 0.55) {
+    return { ...gated, intent: "chat", proposeSearch: true, reason: "low_confidence_search_to_proposal" };
   }
 
-  if (input.pendingSearch && !isLowSignalMessage(input.userText)) {
-    const details = extractSearchDetails(input.userText);
-    const merged = normalizeSearchBrief({
-      ...input.pendingSearch.brief,
-      ...guarded.vendorSearch,
-      ...details
-    });
-
-    return {
-      ...guarded,
-      intent: guarded.intent === "profile_update" ? "profile_update" : "vendor_search_details",
-      vendorSearch: merged
-    };
+  // Mise à jour profil incertaine : on laisse la discussion se poursuivre sans patch.
+  if (gated.intent === "profile_update" && gated.confidence < 0.55) {
+    return { ...gated, intent: "chat", profilePatch: null, profileSummary: null, reason: "low_confidence_profile" };
   }
 
-  if ((guarded.intent === "vendor_search" || guarded.intent === "vendor_search_details") && !guarded.explicitVendorSearch && !hasExplicitSearchIntent(input.userText)) {
-    return {
-      ...guarded,
-      intent: "wedding_chat",
-      vendorSearch: null
-    };
+  if (isSearchExecutionIntent(gated.intent)) {
+    gated.proposeSearch = false;
   }
 
-  if (guarded.intent === "vendor_search") {
-    guarded.vendorSearch = normalizeSearchBrief({
-      ...guarded.vendorSearch,
-      category: guarded.vendorSearch?.category ?? category,
-      ...extractSearchDetails(input.userText)
-    });
+  if (!isSearchExecutionIntent(gated.intent) && !gated.proposeSearch) {
+    gated.vendorSearch = null;
   }
 
-  return guarded;
+  if (gated.intent !== "profile_update") {
+    gated.profilePatch = null;
+    gated.profileSummary = null;
+  }
+
+  return gated;
 }
 
-export function heuristicClassificationV2(userText: string, pendingSearch: PendingSearchSnapshot): IntentClassification {
-  const category = normalizeSearchCategory(userText);
+function isSearchExecutionIntent(intent: ChatV2Intent) {
+  return intent === "search_request" || intent === "search_detail" || intent === "confirm";
+}
 
-  if (pendingSearch && !isNonSearchInquiry(userText) && !isLowSignalMessage(userText)) {
+/**
+ * Mode dégradé : classification purement heuristique, utilisée uniquement quand
+ * le LLM est indisponible. reply reste null (le serveur utilise ses textes de secours).
+ */
+export function heuristicClassificationV2(
+  userText: string,
+  pendingSearch: PendingSearchSnapshot,
+  pendingProposal: PendingProposalSnapshot = null
+): IntentClassification {
+  const details = extractSearchDetails(userText);
+  const hasPending = Boolean(pendingSearch || pendingProposal);
+
+  if (isLowSignalMessage(userText)) {
+    return baseClassification("unclear", 0.42, "heuristic_low_signal");
+  }
+
+  if (hasPending && isNegativeReply(userText)) {
+    return baseClassification("deny", 0.7, "heuristic_deny");
+  }
+
+  if (hasPending && isAffirmativeReply(userText)) {
     return {
-      intent: "vendor_search_details",
-      confidence: 0.55,
-      explicitVendorSearch: false,
-      profilePatch: null,
-      profileSummary: null,
-      vendorSearch: normalizeSearchBrief({ ...pendingSearch.brief, ...extractSearchDetails(userText) }),
-      answerGuidance: null
+      ...baseClassification("confirm", 0.7, "heuristic_confirm"),
+      vendorSearch: normalizeSearchBrief({ ...(pendingProposal?.brief ?? pendingSearch?.brief), ...details })
     };
   }
 
-  if (hasExplicitSearchIntent(userText) && category && !isNonSearchInquiry(userText)) {
+  if (isAdviceOnlyRequest(userText)) {
+    return baseClassification("advice", 0.74, "heuristic_advice");
+  }
+
+  if (isInspirationOnlyRequest(userText)) {
+    return baseClassification("chat", 0.62, "heuristic_inspiration");
+  }
+
+  if (pendingSearch && hasUsefulSearchDetails(details)) {
     return {
-      intent: "vendor_search",
-      confidence: 0.62,
-      explicitVendorSearch: true,
-      profilePatch: null,
-      profileSummary: null,
-      vendorSearch: normalizeSearchBrief({ category, ...extractSearchDetails(userText) }),
-      answerGuidance: null
+      ...baseClassification("search_detail", 0.68, "heuristic_search_detail"),
+      vendorSearch: normalizeSearchBrief({ ...pendingSearch.brief, ...details })
     };
   }
 
-  return {
-    intent: isLowSignalMessage(userText) ? "unclear" : "wedding_chat",
-    confidence: 0.45,
-    explicitVendorSearch: false,
-    profilePatch: null,
-    profileSummary: null,
-    vendorSearch: null,
-    answerGuidance: null
-  };
+  if (hasExplicitSearchIntent(userText)) {
+    return {
+      ...baseClassification("search_request", 0.76, "heuristic_search_request"),
+      vendorSearch: normalizeSearchBrief(details)
+    };
+  }
+
+  const profilePatch = extractHeuristicProfilePatch(userText);
+  if (profilePatch) {
+    return {
+      ...baseClassification("profile_update", 0.62, "heuristic_profile_update"),
+      profilePatch
+    };
+  }
+
+  if (isNonSearchInquiry(userText) || hasVendorContext(userText)) {
+    return baseClassification("advice", 0.62, "heuristic_vendor_advice");
+  }
+
+  return baseClassification("chat", 0.5, "heuristic_chat");
 }
 
 export function normalizeSearchBrief(value: Partial<VendorSearchBrief> | null | undefined): VendorSearchBrief {
   return {
-    category: value?.category ? normalizeSearchCategory(value.category) : null,
+    category: value?.category ? normalizeIntentSearchCategory(value.category) : null,
     location: cleanNullableString(value?.location),
     style: cleanNullableString(value?.style),
     constraints: cleanNullableString(value?.constraints),
@@ -369,282 +445,428 @@ export function normalizeSearchBrief(value: Partial<VendorSearchBrief> | null | 
 export function extractSearchDetails(userText: string): Partial<VendorSearchBrief> {
   const normalized = normalizeForIntent(userText);
   const styleMatches = normalized.match(
-    /\b(moderne|classique|traditionnel|italien|vegetarien|vegan|chic|simple|elegant|boheme|romantique|festif|luxe|champetre|rustique|intimiste|convivial|editorial|historique|nature|vue|etang|lac|jardin|terrasse|rooftop)\b/g
+    /\b(moderne|classique|traditionnel|italien|libanais|oriental|vegetarien|vegan|chic|simple|elegant|boheme|romantique|festif|luxe|champetre|rustique|intimiste|convivial|editorial|historique|nature|naturel|naturelle|reportage|artistique|lumineux|lumineuse|spontane|spontanee|vintage|minimaliste|colore|coloree|vue|etang|lac|jardin|terrasse|rooftop)\b/g
   );
   const budget = userText.match(/\b\d{3,6}\s*(?:€|eur|euros?)\b/i)?.[0] ?? null;
   const guestCount = userText.match(/\b(\d{1,4})\s*(?:invites|invités|personnes|convives)\b/i)?.[1];
-  const location = extractRequestedLocation(userText);
 
   return {
-    category: normalizeSearchCategory(userText),
-    location,
+    category: normalizeIntentSearchCategory(userText),
+    location: extractRequestedLocation(userText),
     style: styleMatches ? Array.from(new Set(styleMatches)).slice(0, 5).join(", ") : null,
     constraints: extractConstraintText(userText),
     budget,
-    guestCount: guestCount ? Number(guestCount) : null
+    guestCount: guestCount ? Number(guestCount) : null,
+    searchQuery: null
   };
 }
 
+/** Réservé au mode dégradé : détection regex d'une demande explicite de prestataires. */
 export function hasExplicitSearchIntent(value: string) {
   const normalized = normalizeForIntent(value);
-  if (!normalized || isNonSearchInquiry(value)) return false;
-  const hasSearchVerb =
-    /\b(cherche|chercher|recherche|rechercher|trouve|trouver|deniche|denicher|selectionne|selectionner|propose|proposer|recommande|recommander|liste|lister|lance|lancer|demarre|demarrer)\b/.test(
+  if (!normalized || isAdviceOnlyRequest(value) || isInspirationOnlyRequest(value)) return false;
+
+  const hasConcreteObject =
+    Boolean(normalizeIntentSearchCategory(value)) ||
+    /\b(prestataire|prestataires|option|options|adresse|adresses|contact|contacts|pepite|pepites|fiche|fiches|shortlist|selection)\b/.test(
       normalized
     );
-  const hasNeedPhrase =
-    /\b(j ai besoin|on a besoin|nous avons besoin|il me faut|il nous faut|je veux|on veut|nous voulons|je voudrais|on voudrait|nous voudrions)\b/.test(
-      normalized
-    );
-  const hasCategory = Boolean(normalizeSearchCategory(value));
-  const hasVendorObject = /\b(prestataire|prestataires|option|options|adresse|adresses|contact|contacts|pepite|pepites|fiche|fiches)\b/.test(normalized);
-  return hasSearchVerb || (hasNeedPhrase && (hasCategory || hasVendorObject));
+
+  if (!hasConcreteObject) return false;
+
+  return isDirectSearchCommand(normalized) || isExpressedVendorNeed(normalized);
 }
 
 export function isVendorAdviceDiscussion(value: string) {
+  return isAdviceOnlyRequest(value);
+}
+
+export function isAdviceOnlyRequest(value: string) {
   const normalized = normalizeForIntent(value);
-  if (!normalized) return false;
+  if (!normalized || !hasVendorContext(value)) return false;
+  if (isDirectSearchCommand(normalized) || isExpressedVendorNeed(normalized)) return false;
 
-  const hasVendorContext =
-    Boolean(normalizeSearchCategory(value)) || /\b(prestataire|prestataires|photobooth|photo booth|wedding planner)\b/.test(normalized);
-  if (!hasVendorContext) return false;
-
-  const hasAdviceIntent =
-    /\b(conseil|conseils|conseille|conseillez|avis|aide moi a choisir|aidez moi a choisir|aide a choisir|comment choisir|comment comparer|comparer|comparaison|difference|differences|critere|criteres|utile|necessaire|obligatoire|important|priorite|prioritaire|budget moyen|prix moyen|combien ca coute|faut il|dois je|doit on|parle moi|parler|discuter|explique|c est quoi|qu est ce que|tu connais|connais tu)\b/.test(
+  return (
+    /\b(conseil|conseils|conseille|conseilles|conseillez|avis|methode|methodes|critere|criteres|comment|comparer|comparaison|difference|differences|choisir|choix|trouver le bon|trouver la bonne|bon traiteur|bonne photographe|utile|necessaire|obligatoire|important|priorite|prioritaire|budget moyen|prix moyen|combien ca coute|a quoi faire attention|quoi regarder|faut il|dois je|doit on|parle moi|parler|discuter|explique|c est quoi|qu est ce que|tu connais|connais tu)\b/.test(
       normalized
     ) ||
-    /\b(tu me recommandes quoi|vous me recommandez quoi|que me recommandes tu|que recommandez vous|quoi choisir)\b/.test(normalized);
-
-  if (!hasAdviceIntent) return false;
-
-  const asksForConcreteResults =
-    /\b(cherche|chercher|recherche|rechercher|trouve|trouver|deniche|denicher|selectionne|selectionner|liste|lister|shortlist|fiche|fiches|adresse|adresses|contact|contacts)\b/.test(
+    /\b(tu me recommandes quoi|tu me recommande quoi|vous me recommandez quoi|que me recommandes tu|que recommandez vous|quoi comme type|quel type|quels types|quoi choisir)\b/.test(
       normalized
-    ) ||
-    (/\b(propose|proposer|recommande|recommander)\b/.test(normalized) &&
-      !/\b(quoi|comment|avis|conseil|conseils|type|types|critere|criteres)\b/.test(normalized));
-
-  return !asksForConcreteResults;
+    )
+  );
 }
 
 export function isNonSearchInquiry(value: string) {
   const normalized = normalizeForIntent(value);
   if (/\bpourquoi pas\b/.test(normalized)) return false;
-  return /\b(c est quoi|c quoi|qu est ce que|ca veut dire quoi|definition|definis|explique|comment ca marche|comment fonctionne|tu connais|connais tu|vous connaissez|avis|conseil|conseils|conseille|conseillez|comment choisir|comment comparer|aide moi a choisir|aidez moi a choisir|aide a choisir|pourquoi|combien ca coute|budget moyen|prix moyen|a quoi ca sert|faut il|dois je|doit on|parle moi|parler|discuter|tu me recommandes quoi|vous me recommandez quoi|que me recommandes tu|que recommandez vous|quoi choisir)\b/.test(
-    normalized
+  return (
+    isAdviceOnlyRequest(value) ||
+    /\b(c est quoi|c quoi|qu est ce que|ca veut dire quoi|definition|definis|explique|comment ca marche|comment fonctionne|tu connais|connais tu|vous connaissez|avis|conseil|conseils|conseille|conseilles|conseillez|pourquoi|combien ca coute|budget moyen|prix moyen|a quoi ca sert|faut il|dois je|doit on|parle moi|parler|discuter)\b/.test(
+      normalized
+    )
   );
+}
+
+export function isInspirationOnlyRequest(value: string) {
+  const normalized = normalizeForIntent(value);
+  if (!normalized) return false;
+  const asksForInspiration = /\b(idee|idees|inspiration|inspirations|inspi|inspis|exemple|exemples|theme|themes|ambiance|ambiances)\b/.test(normalized);
+  const asksForConcreteVendors =
+    /\b(prestataire|prestataires|adresse|adresses|contact|contacts|pepite|pepites|fiche|fiches|shortlist|selection)\b/.test(normalized);
+  return asksForInspiration && !asksForConcreteVendors;
 }
 
 export function isLowSignalMessage(value: string) {
   const normalized = normalizeForIntent(value);
   if (!normalized) return true;
-  if (normalizeSearchCategory(value)) return false;
+  if (normalizeIntentSearchCategory(value)) return false;
+  if (isAffirmativeReply(value) || isNegativeReply(value)) return false;
   if (new Set(["test", "essai", "asdf", "azerty", "qwerty", "blabla", "blah", "ok test"]).has(normalized)) return true;
   const compact = normalized.replace(/\s+/g, "");
+  if (compact.length <= 2) return true;
   if (compact.length >= 6 && !/[aeiouy]/.test(compact)) return true;
   return compact.length >= 8 && vowelRatio(compact) < 0.18 && !/\d/.test(compact);
+}
+
+export function isAffirmativeReply(value: string) {
+  const normalized = normalizeForIntent(value);
+  return /^(oui|ouais|ouaip|yes|yep|ok|okay|go|vas y|allez|allons y|d accord|daccord|c est bon|cest bon|ca marche|parfait|super|top|carrement|banco|volontiers|avec plaisir|je veux bien|on veut bien|valide|je valide|c est parti|lance|lancez|lance la|lance une)\b/.test(
+    normalized
+  );
+}
+
+export function isNegativeReply(value: string) {
+  const normalized = normalizeForIntent(value);
+  return (
+    /^(non|nope|nan|pas maintenant|pas tout de suite|laisse|laissez|stop|finalement non|non merci)\b/.test(normalized) ||
+    /\b(laisse tomber|on annule|j annule|annule la|annulez|plus besoin|on arrete|on abandonne|abandonne)\b/.test(normalized)
+  );
 }
 
 export function normalizeForIntent(value: string) {
   return value
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[̀-ͯ]/g, "")
     .replace(/['’]/g, " ")
     .replace(/[^a-z0-9€ ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-export const CHAT_V2_GUARD_TEST_CASES: Array<{
+type GuardTestCase = {
   name: string;
   userText: string;
   pendingSearch: PendingSearchSnapshot;
+  pendingProposal: PendingProposalSnapshot;
   expectedIntent: ChatV2Intent;
-  expectedExplicitSearch: boolean;
-}> = [
-  {
-    name: "question de comprehension prestataire",
-    userText: "Non mais c'est quoi un photobooth ?",
-    pendingSearch: null,
-    expectedIntent: "wedding_chat",
-    expectedExplicitSearch: false
+};
+
+const COLLECTE_TRAITEUR: PendingSearchSnapshot = {
+  brief: {
+    category: "caterer",
+    location: "Marseille",
+    style: null,
+    constraints: null,
+    budget: null,
+    guestCount: null,
+    searchQuery: null
   },
-  {
-    name: "conseil prestataire sans recherche",
-    userText: "Tu me conseilles quoi pour choisir un traiteur ?",
-    pendingSearch: null,
-    expectedIntent: "wedding_chat",
-    expectedExplicitSearch: false
+  turns: 0
+};
+
+const PROPOSAL_PHOTOGRAPHE: PendingProposalSnapshot = {
+  brief: {
+    category: "photographer",
+    location: "Nantes",
+    style: null,
+    constraints: null,
+    budget: null,
+    guestCount: null,
+    searchQuery: null
   },
+  initialMessage: "Il nous faudrait un photographe pour juin à Nantes"
+};
+
+/**
+ * Cas de garde du mode dégradé (heuristiques + porte d'exécution, sans LLM).
+ * Sert de non-régression pour le fallback : npm run test:intent.
+ */
+export const CHAT_V2_GUARD_TEST_CASES: GuardTestCase[] = [
+  // --- Conseil, jamais de recherche ---
+  { name: "conseil trouver bon traiteur", userText: "Tu me conseilles quoi pour trouver le bon traiteur ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "comment trouver bon traiteur", userText: "Comment trouver le bon traiteur ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "criteres photographe", userText: "Quels critères pour choisir un photographe ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "type de dj", userText: "Tu me recommandes quoi comme type de DJ ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "conseil lieu sans recherche", userText: "Comment choisir un lieu de mariage ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "question comprehension prestataire", userText: "Non mais c'est quoi un photobooth ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "prix moyen fleuriste", userText: "C'est quoi le budget moyen pour un fleuriste ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "fleurs on fait comment", userText: "Et pour les fleurs, on fait comment ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+
+  // --- Demandes explicites de recherche ---
+  { name: "recherche traiteurs italiens", userText: "Trouve-moi des traiteurs italiens à Marseille", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "recherche vegetarienne lyon", userText: "Cherche des traiteurs avec option végétarienne autour de Lyon", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "liste photographes bordeaux", userText: "Liste-moi 3 photographes à Bordeaux", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "recommandation concrete traiteurs", userText: "Tu me recommandes des traiteurs à Lyon", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "voir lieux mariage rueil", userText: "Je veux bien voir des lieux de mariages à Rueil malmaison", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "trouve domaine normandie", userText: "Trouve-nous un joli domaine en Normandie", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "propose fleuristes annecy", userText: "propose-nous quelques fleuristes vers Annecy", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "montre salles 77", userText: "Tu peux nous montrer des salles dans le 77 ?", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "il nous faudrait photographe", userText: "Il nous faudrait un photographe pour juin à Nantes", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "besoin dj toulouse", userText: "On aurait besoin d'un DJ sur Toulouse, tu peux nous aider ?", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "a la recherche traiteur libanais", userText: "Je suis à la recherche d'un traiteur libanais", pendingSearch: null, pendingProposal: null, expectedIntent: "search_request" },
+  { name: "lance la recherche seule", userText: "Oui, lance la recherche", pendingSearch: null, pendingProposal: PROPOSAL_PHOTOGRAPHE, expectedIntent: "confirm" },
+
+  // --- Confirmations et refus ---
+  { name: "oui vas-y avec proposition", userText: "oui vas-y", pendingSearch: null, pendingProposal: PROPOSAL_PHOTOGRAPHE, expectedIntent: "confirm" },
+  { name: "ok parfait avec proposition", userText: "Ok parfait !", pendingSearch: null, pendingProposal: PROPOSAL_PHOTOGRAPHE, expectedIntent: "confirm" },
+  { name: "vas-y pendant collecte", userText: "vas-y lance", pendingSearch: COLLECTE_TRAITEUR, pendingProposal: null, expectedIntent: "confirm" },
+  { name: "refus proposition", userText: "non laisse tomber", pendingSearch: null, pendingProposal: PROPOSAL_PHOTOGRAPHE, expectedIntent: "deny" },
+  { name: "annulation pendant collecte", userText: "en fait on annule, on ne cherche plus de traiteur", pendingSearch: COLLECTE_TRAITEUR, pendingProposal: null, expectedIntent: "deny" },
+  { name: "oui sans rien en attente", userText: "oui", pendingSearch: null, pendingProposal: null, expectedIntent: "chat" },
+
+  // --- Collecte ---
+  { name: "detail pendant collecte", userText: "plutôt moderne, budget 4000 euros", pendingSearch: COLLECTE_TRAITEUR, pendingProposal: null, expectedIntent: "search_detail" },
   {
-    name: "recherche explicite avec categorie",
-    userText: "Cherche-moi des traiteurs italiens à Marseille",
-    pendingSearch: null,
-    expectedIntent: "vendor_search",
-    expectedExplicitSearch: true
-  },
-  {
-    name: "detail naturel pendant collecte",
-    userText: "Plutôt moderne, avec une vibe italienne",
+    name: "detail lieu nature piscine parking pendant collecte",
+    userText: "Une espèce de maison nature, avec une piscine si possible. Un accès parking ce serait un plus !",
     pendingSearch: {
-      brief: normalizeSearchBrief({ category: "caterer", location: "Marseille" }),
+      brief: { category: "venue", location: "Rueil-Malmaison", style: null, constraints: null, budget: null, guestCount: null, searchQuery: null },
       turns: 0
     },
-    expectedIntent: "vendor_search_details",
-    expectedExplicitSearch: false
+    pendingProposal: null,
+    expectedIntent: "search_detail"
+  },
+  { name: "conseil pendant collecte", userText: "comment je choisis entre deux traiteurs ?", pendingSearch: COLLECTE_TRAITEUR, pendingProposal: null, expectedIntent: "advice" },
+  {
+    name: "style naturel apres echec recherche",
+    userText: "Quelque chose de naturel",
+    pendingSearch: {
+      brief: { category: "photographer", location: "Saint-Cloud", style: null, constraints: null, budget: null, guestCount: null, searchQuery: null },
+      turns: 0
+    },
+    pendingProposal: null,
+    expectedIntent: "search_detail"
   },
   {
-    name: "message tres court",
-    userText: "dd",
-    pendingSearch: null,
-    expectedIntent: "unclear",
-    expectedExplicitSearch: false
-  }
+    name: "peu importe le prix pendant collecte",
+    userText: "Peu importe le prix honnêtement",
+    pendingSearch: {
+      brief: { category: "photographer", location: "Saint-Cloud", style: "naturel", constraints: null, budget: null, guestCount: null, searchQuery: null },
+      turns: 1
+    },
+    pendingProposal: null,
+    expectedIntent: "search_detail"
+  },
+  {
+    name: "question conseil prioritaire malgre budget",
+    userText: "budget autour de 3000 euros mais dis-moi d'abord comment comparer les menus",
+    pendingSearch: COLLECTE_TRAITEUR,
+    pendingProposal: null,
+    expectedIntent: "advice"
+  },
+
+  // --- Profil ---
+  { name: "changement invites", userText: "Finalement on sera 150", pendingSearch: null, pendingProposal: null, expectedIntent: "profile_update" },
+  { name: "changement invites explicite", userText: "Finalement on sera 150 invités", pendingSearch: null, pendingProposal: null, expectedIntent: "profile_update" },
+  { name: "changement budget global", userText: "Notre budget global est plutôt de 25000 euros", pendingSearch: null, pendingProposal: null, expectedIntent: "profile_update" },
+
+  // --- Discussion / inspiration / hors périmètre ---
+  { name: "inspiration sans recherche prestataire", userText: "Cherche-moi des idées de décoration champêtre", pendingSearch: null, pendingProposal: null, expectedIntent: "chat" },
+  { name: "question identite hada", userText: "Tu es une IA ou une vraie personne ?", pendingSearch: null, pendingProposal: null, expectedIntent: "chat" },
+  { name: "emotion fiancailles", userText: "On s'est fiancés hier, on est un peu perdus...", pendingSearch: null, pendingProposal: null, expectedIntent: "chat" },
+  { name: "photobooth non couvert", userText: "Cherche-moi un photobooth à Paris", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "patissier non couvert", userText: "Un pâtissier pour le wedding cake, t'as des adresses ?", pendingSearch: null, pendingProposal: null, expectedIntent: "advice" },
+  { name: "message tres court", userText: "dd", pendingSearch: null, pendingProposal: null, expectedIntent: "unclear" }
 ];
 
 export function evaluateChatV2GuardTestCases() {
   return CHAT_V2_GUARD_TEST_CASES.map((testCase) => {
-    const classification = applyChatV2DecisionGuards(heuristicClassificationV2(testCase.userText, testCase.pendingSearch), {
-      userText: testCase.userText,
-      pendingSearch: testCase.pendingSearch
-    });
+    const classification = applyExecutionGate(
+      heuristicClassificationV2(testCase.userText, testCase.pendingSearch, testCase.pendingProposal),
+      {
+        userText: testCase.userText,
+        pendingSearch: testCase.pendingSearch,
+        pendingProposal: testCase.pendingProposal
+      }
+    );
 
     return {
       ...testCase,
       actualIntent: classification.intent,
-      actualExplicitSearch: classification.explicitVendorSearch,
-      passed: classification.intent === testCase.expectedIntent && classification.explicitVendorSearch === testCase.expectedExplicitSearch
+      proposeSearch: classification.proposeSearch,
+      vendorSearch: classification.vendorSearch,
+      passed: classification.intent === testCase.expectedIntent
     };
   });
 }
 
-function normalizeHadaDecision(raw: Record<string, unknown>): HadaDecision {
-  const intents = normalizeDecisionIntents(raw.intents);
-  if (intents.length === 0) {
-    const legacyIntent = normalizeLegacyIntent(raw.intent);
-    if (legacyIntent) intents.push(legacyIntent);
-  }
+type LlmEvalCase = {
+  name: string;
+  userText: string;
+  pendingSearch: PendingSearchSnapshot;
+  pendingProposal: PendingProposalSnapshot;
+  profileSummary?: string;
+  history?: Array<{ role: "user" | "assistant"; content: string }>;
+  expectedIntents: ChatV2Intent[];
+  expectedProposeSearch?: boolean;
+};
 
-  const toolCalls = normalizeToolCalls(raw.tool_calls);
-  const profileUpdates = normalizeProfileUpdates(raw.profile_updates, raw.profile_patch);
-  const searchQuery = normalizeDecisionSearchQuery(raw.search_query ?? raw.vendor_search);
-  const memoryNotes = normalizeMemoryNotes(raw.memory_notes);
+/**
+ * Jeu d'évaluation du routeur LLM réel (scripts/eval-intent-live.mjs).
+ * expectedIntents accepte plusieurs intentions quand la frontière est légitime.
+ */
+export const CHAT_V2_LLM_EVAL_CASES: LlmEvalCase[] = [
+  { name: "conseil trouver bon traiteur", userText: "Tu me conseilles quoi pour trouver le bon traiteur ?", pendingSearch: null, pendingProposal: null, expectedIntents: ["advice"], expectedProposeSearch: false },
+  { name: "comment choisir lieu", userText: "Comment choisir un lieu de mariage ?", pendingSearch: null, pendingProposal: null, expectedIntents: ["advice"], expectedProposeSearch: false },
+  { name: "combien coute photographe", userText: "Combien coûte un photographe ?", pendingSearch: null, pendingProposal: null, expectedIntents: ["advice"], expectedProposeSearch: false },
+  { name: "recherche traiteurs italiens", userText: "Trouve-moi des traiteurs italiens à Marseille", pendingSearch: null, pendingProposal: null, expectedIntents: ["search_request"] },
+  { name: "liste photographes bordeaux", userText: "Liste-moi 3 photographes à Bordeaux", pendingSearch: null, pendingProposal: null, expectedIntents: ["search_request"] },
+  { name: "montre salles 77", userText: "Tu peux nous montrer des salles dans le 77 ?", pendingSearch: null, pendingProposal: null, expectedIntents: ["search_request"] },
+  { name: "a la recherche traiteur libanais", userText: "Je suis à la recherche d'un traiteur libanais", pendingSearch: null, pendingProposal: null, expectedIntents: ["search_request"] },
+  { name: "il nous faudrait photographe", userText: "Il nous faudrait un photographe pour juin à Nantes", pendingSearch: null, pendingProposal: null, expectedIntents: ["chat", "advice"], expectedProposeSearch: true },
+  { name: "besoin dj toulouse", userText: "On aurait besoin d'un DJ sur Toulouse, tu peux nous aider ?", pendingSearch: null, pendingProposal: null, expectedIntents: ["chat", "advice", "search_request"] },
+  { name: "toujours pas de fleuriste", userText: "On n'a toujours pas de fleuriste...", pendingSearch: null, pendingProposal: null, expectedIntents: ["chat", "advice"], expectedProposeSearch: true },
+  {
+    name: "confirmation lance la recherche",
+    userText: "Oui, lance la recherche",
+    pendingSearch: null,
+    pendingProposal: PROPOSAL_PHOTOGRAPHE,
+    history: [
+      { role: "user", content: "Il nous faudrait un photographe pour juin à Nantes" },
+      { role: "assistant", content: "Bien sûr ! Voulez-vous que je lance une recherche de photographes autour de Nantes ?" }
+    ],
+    expectedIntents: ["confirm"]
+  },
+  {
+    name: "confirmation vas-y",
+    userText: "vas-y",
+    pendingSearch: null,
+    pendingProposal: PROPOSAL_PHOTOGRAPHE,
+    history: [
+      { role: "user", content: "Il nous faudrait un photographe pour juin à Nantes" },
+      { role: "assistant", content: "Voulez-vous que je lance une recherche de photographes autour de Nantes ?" }
+    ],
+    expectedIntents: ["confirm"]
+  },
+  {
+    name: "refus proposition",
+    userText: "non laisse tomber, on verra plus tard",
+    pendingSearch: null,
+    pendingProposal: PROPOSAL_PHOTOGRAPHE,
+    history: [
+      { role: "user", content: "Il nous faudrait un photographe pour juin à Nantes" },
+      { role: "assistant", content: "Voulez-vous que je lance une recherche de photographes autour de Nantes ?" }
+    ],
+    expectedIntents: ["deny"]
+  },
+  {
+    name: "detail pendant collecte",
+    userText: "plutôt moderne, budget 4000 euros",
+    pendingSearch: COLLECTE_TRAITEUR,
+    pendingProposal: null,
+    history: [
+      { role: "user", content: "Cherche-moi un traiteur à Marseille" },
+      { role: "assistant", content: "Avec plaisir ! Quelle ambiance ou quel style de cuisine imaginez-vous ?" }
+    ],
+    expectedIntents: ["search_detail"]
+  },
+  {
+    name: "conseil pendant collecte",
+    userText: "comment je choisis entre deux traiteurs ?",
+    pendingSearch: COLLECTE_TRAITEUR,
+    pendingProposal: null,
+    history: [
+      { role: "user", content: "Cherche-moi un traiteur à Marseille" },
+      { role: "assistant", content: "Avec plaisir ! Quelle ambiance ou quel style de cuisine imaginez-vous ?" }
+    ],
+    expectedIntents: ["advice"]
+  },
+  {
+    name: "annulation pendant collecte",
+    userText: "en fait on annule, on ne cherche plus de traiteur",
+    pendingSearch: COLLECTE_TRAITEUR,
+    pendingProposal: null,
+    expectedIntents: ["deny"]
+  },
+  { name: "changement invites", userText: "Finalement on sera 150", pendingSearch: null, pendingProposal: null, expectedIntents: ["profile_update"] },
+  { name: "changement budget", userText: "Notre budget global est plutôt de 25 000 €", pendingSearch: null, pendingProposal: null, expectedIntents: ["profile_update"] },
+  { name: "inspiration deco", userText: "Cherche-moi des idées de décoration champêtre", pendingSearch: null, pendingProposal: null, expectedIntents: ["chat", "advice"], expectedProposeSearch: false },
+  { name: "question identite", userText: "Tu es une IA ou une vraie personne ?", pendingSearch: null, pendingProposal: null, expectedIntents: ["chat"] },
+  { name: "emotion fiancailles", userText: "On s'est fiancés hier, on est un peu perdus...", pendingSearch: null, pendingProposal: null, expectedIntents: ["chat", "advice"] },
+  { name: "photobooth non couvert", userText: "Cherche-moi un photobooth à Paris", pendingSearch: null, pendingProposal: null, expectedIntents: ["advice", "chat"], expectedProposeSearch: false },
+  { name: "patissier non couvert", userText: "Un pâtissier pour le wedding cake, t'as des adresses ?", pendingSearch: null, pendingProposal: null, expectedIntents: ["advice", "chat"], expectedProposeSearch: false },
+  { name: "question comprehension photobooth", userText: "Non mais c'est quoi un photobooth ?", pendingSearch: null, pendingProposal: null, expectedIntents: ["advice", "chat"] },
+  { name: "message tres court", userText: "dd", pendingSearch: null, pendingProposal: null, expectedIntents: ["unclear"] }
+];
 
-  if (intents.length === 0) {
-    if (profileUpdates.patch) intents.push({ type: "profile_update_request", confidence: 0.55, priority: 1 });
-    else if (searchQuery?.explicit) intents.push({ type: "vendor_search_request", confidence: 0.55, priority: 1 });
-    else intents.push({ type: "wedding_chat", confidence: 0.45, priority: 1 });
-  }
+function normalizeTurnDecision(raw: Record<string, unknown>): HadaDecision {
+  const intent = normalizeRouterIntent(raw.intent ?? raw.action);
+  const search = normalizeDecisionSearch(raw.search ?? raw.search_query);
+  const profilePatch = intent === "profile_update" ? parseProfilePatch(raw.profile_patch ?? raw.profile_updates) : null;
 
   return {
-    intents: intents.sort((left, right) => left.priority - right.priority),
-    needs_clarification: raw.needs_clarification === true,
-    clarification_question: readString(raw.clarification_question),
-    tool_calls: toolCalls.length > 0 ? toolCalls : [{ type: "none", reason: "", payload: {} }],
-    user_reply: readString(raw.user_reply) ?? "",
-    profile_updates: profileUpdates,
-    search_query: searchQuery,
-    safety_flags: readStringArray(raw.safety_flags),
-    memory_notes: memoryNotes
+    intent,
+    confidence: clampConfidence(readNumber(raw.confidence) ?? 0.45),
+    reply: readString(raw.reply ?? raw.user_reply),
+    proposeSearch: raw.propose_search === true || raw.proposeSearch === true,
+    search,
+    profilePatch,
+    profileSummary: readString(raw.profile_summary) ?? readString((raw.profile_updates as Record<string, unknown> | undefined)?.summary),
+    reason: readString(raw.reason)
   };
 }
 
-function normalizeDecisionIntents(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item): HadaDecision["intents"][number] | null => {
-      if (!item || typeof item !== "object") return null;
-      const raw = item as Record<string, unknown>;
-      const type = normalizeHadaIntent(raw.type);
-      if (!type) return null;
-      return {
-        type,
-        confidence: clampConfidence(readNumber(raw.confidence) ?? 0.45),
-        priority: Math.max(1, Math.round(readNumber(raw.priority) ?? 9))
-      };
-    })
-    .filter((item): item is HadaDecision["intents"][number] => Boolean(item));
-}
-
-function normalizeToolCalls(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item): HadaDecision["tool_calls"][number] | null => {
-      if (!item || typeof item !== "object") return null;
-      const raw = item as Record<string, unknown>;
-      const type = normalizeToolCallType(raw.type);
-      if (!type) return null;
-      return {
-        type,
-        reason: readString(raw.reason) ?? "",
-        payload: raw.payload && typeof raw.payload === "object" ? (raw.payload as Record<string, unknown>) : {}
-      };
-    })
-    .filter((item): item is HadaDecision["tool_calls"][number] => Boolean(item));
-}
-
-function normalizeProfileUpdates(value: unknown, legacyPatch: unknown): HadaDecision["profile_updates"] {
-  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const patch = parseProfilePatch(raw.patch ?? legacyPatch);
-  return {
-    requires_confirmation: patch ? raw.requires_confirmation !== false : false,
-    summary: readString(raw.summary),
-    patch
+function normalizeRouterIntent(value: unknown): ChatV2Intent {
+  const intent = readString(value)?.toLowerCase();
+  const mapping: Record<string, ChatV2Intent> = {
+    advice: "advice",
+    wedding_advice: "advice",
+    wedding_chat: "chat",
+    chat: "chat",
+    off_topic: "chat",
+    profile_update: "profile_update",
+    profile_update_request: "profile_update",
+    profile_update_confirmation: "profile_update",
+    search_request: "search_request",
+    search_launch: "search_request",
+    vendor_search: "search_request",
+    vendor_search_request: "search_request",
+    search_detail: "search_detail",
+    vendor_search_details: "search_detail",
+    confirm: "confirm",
+    confirmation: "confirm",
+    accept: "confirm",
+    deny: "deny",
+    refuse: "deny",
+    decline: "deny",
+    cancel: "deny",
+    unclear: "unclear"
   };
+  return intent ? (mapping[intent] ?? "unclear") : "unclear";
 }
 
-function normalizeDecisionSearchQuery(value: unknown): HadaDecision["search_query"] {
+function normalizeDecisionSearch(value: unknown): (VendorSearchBrief & { rawCategoryLabel: string | null }) | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
-  const category = normalizeSearchCategory(readString(raw.category));
+  const rawCategoryLabel = readString(raw.category);
   const brief = normalizeSearchBrief({
-    category,
+    category: rawCategoryLabel ? normalizeIntentSearchCategory(rawCategoryLabel) : null,
     location: readString(raw.location),
     style: readString(raw.style),
     constraints: readString(raw.constraints),
-    budget: readString(raw.budget),
-    guestCount: readNumber(raw.guest_count),
-    searchQuery: readString(raw.search_query)
+    budget: readString(raw.budget) ?? (readNumber(raw.budget) !== null ? `${readNumber(raw.budget)} €` : null),
+    guestCount: readNumber(raw.guest_count ?? raw.guestCount),
+    searchQuery: readString(raw.search_query ?? raw.searchQuery)
   });
 
-  const hasAnySearchField = Boolean(
-    brief.category || brief.location || brief.style || brief.constraints || brief.budget || brief.guestCount || brief.searchQuery
-  );
-  if (!hasAnySearchField && raw.explicit !== true) return null;
-
-  return {
-    ...brief,
-    explicit: raw.explicit === true
-  };
-}
-
-function normalizeMemoryNotes(value: unknown): HadaDecision["memory_notes"] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item): HadaDecision["memory_notes"][number] | null => {
-      if (!item || typeof item !== "object") return null;
-      const raw = item as Record<string, unknown>;
-      const type = readString(raw.type);
-      const valueText = readString(raw.value);
-      if (!valueText || !["preference", "constraint", "emotion", "decision"].includes(type ?? "")) return null;
-      return {
-        type: type as HadaDecision["memory_notes"][number]["type"],
-        value: valueText,
-        confidence: clampConfidence(readNumber(raw.confidence) ?? 0.45)
-      };
-    })
-    .filter((item): item is HadaDecision["memory_notes"][number] => Boolean(item));
-}
-
-function searchQueryToBrief(value: HadaDecision["search_query"]): VendorSearchBrief | null {
-  if (!value) return null;
-  return normalizeSearchBrief(value);
+  if (!hasAnySearchField(brief) && !rawCategoryLabel) return null;
+  return { ...brief, rawCategoryLabel: brief.category ? null : rawCategoryLabel };
 }
 
 function parseProfilePatch(value: unknown): ProfileUpdatePatch | null {
-  if (!value || typeof value !== "object") return null;
-  const raw = value as Record<string, unknown>;
+  const raw = unwrapProfilePatch(value);
+  if (!raw) return null;
   const patch: ProfileUpdatePatch = {};
 
   if ("wedding_date" in raw) patch.wedding_date = readString(raw.wedding_date);
@@ -659,6 +881,13 @@ function parseProfilePatch(value: unknown): ProfileUpdatePatch | null {
   return Object.keys(patch).length > 0 ? patch : null;
 }
 
+function unwrapProfilePatch(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.patch && typeof raw.patch === "object") return raw.patch as Record<string, unknown>;
+  return raw;
+}
+
 function parseWeddingChecklistPatch(value: unknown): WeddingChecklistPatch | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
@@ -668,6 +897,86 @@ function parseWeddingChecklistPatch(value: unknown): WeddingChecklistPatch | nul
   if (completed.length > 0) patch.completed_item_ids = completed;
   if (reopened.length > 0) patch.reopened_item_ids = reopened;
   return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function baseClassification(intent: ChatV2Intent, confidence: number, reason: string): IntentClassification {
+  return {
+    intent,
+    confidence,
+    reply: null,
+    proposeSearch: false,
+    vendorSearch: null,
+    unsupportedCategoryLabel: null,
+    profilePatch: null,
+    profileSummary: null,
+    reason
+  };
+}
+
+function hasVendorContext(value: string) {
+  const normalized = normalizeForIntent(value);
+  return (
+    Boolean(normalizeIntentSearchCategory(value)) ||
+    /\b(prestataire|prestataires|photobooth|photo booth|wedding planner|wedding cake|patissier|patisserie|gateau|maquilleuse|maquillage|coiffeur|coiffeuse|coiffure|officiant|officiante|animation|lieu|lieux|salle|salles|domaine|domaines)\b/.test(
+      normalized
+    )
+  );
+}
+
+function isDirectSearchCommand(normalized: string) {
+  return (
+    /\b(cherches?|cherchez|recherches?|recherchez|trouves?|trouvez|deniches?|denichez|selectionnes?|selectionnez|listes?|listez|recommandes?|recommandez|proposes?|proposez|montres?|montrez|presentes?|presentez|affiches?|affichez)[ -]*(moi|nous)?\s+(des|un|une|les|la|le|quelques|plusieurs|deux|trois|quatre|2|3|4)\b/.test(
+      normalized
+    ) ||
+    /\b(peux tu|pouvez vous|tu peux|vous pouvez|tu pourrais|vous pourriez)\s+(me\s+|nous\s+)?(chercher|rechercher|trouver|denicher|selectionner|lister|recommander|proposer|montrer|presenter|afficher)\b/.test(
+      normalized
+    ) ||
+    /\b(je veux bien|je veux|on veut|nous voulons|je voudrais|on voudrait|nous voudrions|j aimerais|on aimerait|nous aimerions)\s+(voir|avoir|consulter|recevoir|obtenir|regarder)\s+(des|les|quelques|un|une)\b/.test(
+      normalized
+    ) ||
+    /\b(lance|lancer|lancez|demarre|demarrer|demarrez|fais|faire|faites|relance|relancer|relancez)\s+(moi\s+|nous\s+)?(la\s+|une\s+|cette\s+)?recherche\b/.test(
+      normalized
+    ) ||
+    /\b(donne moi|donnez moi|donne nous|donnez nous|envoie moi|envoyez moi|sors moi|sort moi|fournis moi|fournissez moi)\s+(des\s+)?(adresses|contacts|fiches|prestataires|options|shortlist)\b/.test(
+      normalized
+    ) ||
+    /\b(je veux|on veut|nous voulons|je voudrais|on voudrait|nous voudrions)\s+(des\s+|un\s+|une\s+)?(prestataires|traiteurs|photographes|dj|fleuristes|videastes|lieux|salles|domaines|adresses|contacts|fiches|options|shortlist)\b/.test(
+      normalized
+    )
+  );
+}
+
+/** Formulations de besoin fortes traitées comme demandes en mode dégradé (« il nous faut un... »). */
+function isExpressedVendorNeed(normalized: string) {
+  return (
+    /\b(il|ils?)?\s?(me|nous)\s+(faut|faudrait|faudra)\s+(un|une|des)\b/.test(normalized) ||
+    /\b(on a|on aurait|nous avons|nous aurions|j ai|j aurais)\s+besoin\s+d\s?(un|une|e|es)?\b/.test(normalized) ||
+    /\b(je suis|nous sommes|on est)\s+a la recherche\s+d\s?(un|une|e|es)?\b/.test(normalized)
+  );
+}
+
+function extractHeuristicProfilePatch(value: string): ProfileUpdatePatch | null {
+  const normalized = normalizeForIntent(value);
+  const patch: ProfileUpdatePatch = {};
+
+  const guestMatch = normalized.match(/\b(?:on sera|nous serons|on serait|nous serions|on est passe a|on passe a)\s+(\d{1,4})\b/);
+  if (guestMatch) patch.guest_count = Number(guestMatch[1]);
+
+  const budgetMatch = normalized.match(/\b(?:notre budget|le budget|budget global|budget total|budget max)\s+(?:est|sera|serait|passe|monte|descend)?\s*(?:plutot)?\s*(?:a|de|d)?\s*(\d[\d ]{2,7})\s*(?:€|eur|euros)?\b/);
+  if (budgetMatch) {
+    const amount = Number(budgetMatch[1].replace(/\s+/g, ""));
+    if (Number.isFinite(amount) && amount >= 500) patch.budget_max = amount;
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function hasUsefulSearchDetails(value: Partial<VendorSearchBrief>) {
+  return Boolean(value.location || value.style || value.constraints || value.budget || value.guestCount || value.searchQuery);
+}
+
+function hasAnySearchField(value: Partial<VendorSearchBrief>) {
+  return Boolean(value.category || value.location || value.style || value.constraints || value.budget || value.guestCount || value.searchQuery);
 }
 
 function extractConstraintText(value: string) {
@@ -691,7 +1000,7 @@ function extractConstraintText(value: string) {
 }
 
 function extractRequestedLocation(userText: string) {
-  const match = userText.match(/\b(?:a|à|en|dans|autour de|pres de|près de|vers)\s+([^,.!?;\n]{3,60})/i);
+  const match = userText.match(/\b(?:a|à|en|dans|autour de|pres de|près de|vers|sur)\s+([^,.!?;\n]{2,60})/i);
   const raw = match?.[1]
     ?.split(/\b(?:avec|pour|si|mais|style|ambiance|budget|qui|et)\b/i)[0]
     ?.trim();
@@ -699,55 +1008,28 @@ function extractRequestedLocation(userText: string) {
   return formatDisplayLocation(raw);
 }
 
-function normalizeHadaIntent(value: unknown): HadaDecisionIntent | null {
-  const intent = readString(value);
-  const allowed: HadaDecisionIntent[] = [
-    "wedding_chat",
-    "wedding_advice",
-    "profile_update_request",
-    "profile_update_confirmation",
-    "vendor_search_request",
-    "vendor_search_details",
-    "off_topic",
-    "unclear"
-  ];
-  return allowed.includes(intent as HadaDecisionIntent) ? (intent as HadaDecisionIntent) : null;
+export function normalizeIntentSearchCategory(value: unknown): VendorCategory | null {
+  const normalized = typeof value === "string" ? normalizeForIntent(value) : "";
+  if (!normalized) return null;
+  if (/\b(lieu|lieux|salle|salles|domaine|domaines|chateau|chateaux|reception|venue)\b/.test(normalized)) return "venue";
+  if (/\b(traiteur|traiteurs|caterer|repas|buffet|cocktail|diner|dîner|brunch|menu|menus)\b/.test(normalized)) return "caterer";
+  if (/\b(photographe|photographes|photographer|photo|photos)\b/.test(normalized)) return "photographer";
+  if (/\b(videaste|videastes|videographer|video|videos|film)\b/.test(normalized)) return "videographer";
+  if (/\b(dj|disc jockey|animation musicale|soirée|soiree)\b/.test(normalized)) return "dj";
+  if (/\b(groupe|musicien|musiciens|musician|musique live|orchestre|chanteur|chanteuse)\b/.test(normalized)) return "musician";
+  if (/\b(fleuriste|fleuristes|flowers|fleurs|bouquet|floral)\b/.test(normalized)) return "flowers";
+  if (/\b(deco|decor|decoration|décoration|decorateur|decoratrice|scenographie|scénographie)\b/.test(normalized)) return "decor";
+  if (/\b(robe|robes|dress|couture|boutique mariee|mariée)\b/.test(normalized)) return "dress";
+  if (/\b(costume|costumes|suit|tailleur)\b/.test(normalized)) return "suit";
+  if (/\b(transport|voiture|navette|bus|chauffeur)\b/.test(normalized)) return "transport";
+  return null;
 }
 
-function normalizeLegacyIntent(value: unknown): HadaDecision["intents"][number] | null {
-  const intent = readString(value);
-  if (!intent) return null;
-  const mapping: Record<string, HadaDecisionIntent> = {
-    wedding_chat: "wedding_chat",
-    profile_update: "profile_update_request",
-    vendor_search: "vendor_search_request",
-    vendor_search_details: "vendor_search_details",
-    off_topic: "off_topic",
-    unclear: "unclear"
-  };
-  const type = mapping[intent];
-  return type ? { type, confidence: 0.45, priority: 1 } : null;
-}
-
-function normalizeToolCallType(value: unknown): HadaToolCallType | null {
-  const type = readString(value);
-  const allowed: HadaToolCallType[] = ["propose_profile_update", "confirm_profile_update", "vendor_search", "none"];
-  return allowed.includes(type as HadaToolCallType) ? (type as HadaToolCallType) : null;
-}
-
-function buildProfileBrief(profile: Partial<WeddingProfile> | null) {
-  return {
-    prenoms: [profile?.partner_one_name, profile?.partner_two_name].filter(Boolean).join(" & ") || null,
-    date_mariage: profile?.wedding_date ?? profile?.wedding_period_text ?? null,
-    lieu_mariage: profile?.city ?? profile?.region ?? profile?.country ?? null,
-    budget_global: profile?.budget_max ?? profile?.budget_min ?? null,
-    nombre_invites: profile?.guest_count ?? null,
-    checklist: normalizeWeddingChecklist(profile?.wedding_checklist).map((item) => ({
-      id: item.id,
-      titre: item.title,
-      statut: item.done ? "fait" : "a_faire"
-    }))
-  };
+function compactRecentMessages(messages: UiChatMessage[], count: number) {
+  return messages
+    .slice(-count)
+    .map((message) => `${message.role === "user" ? "Couple" : "Hada"}: ${message.content.replace(/\s+/g, " ").slice(0, 360)}`)
+    .join("\n");
 }
 
 function readString(value: unknown) {

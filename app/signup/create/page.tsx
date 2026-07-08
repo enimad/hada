@@ -37,15 +37,22 @@ export default function SignupCreatePage() {
 
           startTransition(async () => {
             setMessage("");
-            const signupResponse = await fetch("/api/auth/signup", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({ email, password })
-            });
+            let signupResponse: Response;
 
-            const signupResult = await signupResponse.json();
+            try {
+              signupResponse = await fetch("/api/auth/signup", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ email, password })
+              });
+            } catch {
+              setMessage("Impossible de contacter le serveur local. Vérifiez que localhost:3000 est bien lancé.");
+              return;
+            }
+
+            const signupResult = (await signupResponse.json().catch(() => ({ error: "Réponse serveur illisible." }))) as { error?: string };
             if (!signupResponse.ok) {
               setMessage(signupResult.error ?? "Impossible de créer le compte.");
               return;

@@ -14,7 +14,6 @@ export default function robots(): MetadataRoute.Robots {
           "/auth/",
           "/budget",
           "/chat",
-          "/chat-v2",
           "/login",
           "/logout",
           "/messages/",

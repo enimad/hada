@@ -116,13 +116,13 @@ export default function LandingPage() {
 
           <Link
             href="/signup"
-            className="hidden h-12 items-center justify-center rounded-full bg-[var(--hada-coral)] px-5 text-sm font-extrabold text-white shadow-[0_18px_34px_rgba(251,105,116,0.24)] transition hover:bg-[#e95361] sm:inline-flex"
+            className="hidden h-12 items-center justify-center rounded-full bg-[var(--hada-coral)] px-5 text-sm font-extrabold text-white shadow-[0_18px_34px_rgba(251,105,116,0.24)] transition hover:bg-[#e95361] lg:inline-flex"
           >
             Tester Hada
           </Link>
           <Link
             href="/blog"
-            className="inline-flex h-11 items-center justify-center rounded-full border border-[var(--hada-coral)] bg-white px-5 text-sm font-extrabold text-[var(--hada-coral)] shadow-[0_14px_28px_rgba(251,105,116,0.12)] transition sm:hidden"
+            className="inline-flex h-11 items-center justify-center rounded-full border border-[var(--hada-coral)] bg-white px-5 text-sm font-extrabold text-[var(--hada-coral)] shadow-[0_14px_28px_rgba(251,105,116,0.12)] transition lg:hidden"
           >
             Blog Hada
           </Link>
