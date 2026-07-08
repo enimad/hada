@@ -13,8 +13,8 @@ backend:
   name: github
   repo: enimad/hada
   branch: main
-  base_url: /api/decap
-  auth_endpoint: auth`;
+  base_url: ${siteUrl}
+  auth_endpoint: api/decap/auth`;
   const publishMode = localBackend ? "" : "publish_mode: editorial_workflow\n";
 
   return `${backend}
