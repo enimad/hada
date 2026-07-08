@@ -70,10 +70,14 @@ function htmlResponse(html: string, status = 200) {
 }
 
 function renderOAuthMessage(type: "success" | "error", payload: Record<string, string>) {
-  const message =
+  const messagePayload =
     type === "success" && payload.token
-      ? `authorization:github:${type}:${JSON.stringify({ token: payload.token })}`
-      : `authorization:github:${type}:${JSON.stringify(payload)}`;
+      ? {
+          token: payload.token,
+          provider: payload.provider ?? "github"
+        }
+      : payload;
+  const message = `authorization:github:${type}:${JSON.stringify(messagePayload)}`;
   const safeMessage = JSON.stringify(message);
   const statusText = type === "success" ? "Connexion réussie" : "Connexion impossible";
 
@@ -89,37 +93,61 @@ function renderOAuthMessage(type: "success" | "error", payload: Record<string, s
         <script>
           (function () {
             var message = ${safeMessage};
+            var storageKey = "hada:decap-oauth-message";
             var didAuthorize = false;
 
-            function sendAuthorization(targetOrigin) {
+            function persistAuthorization() {
+              if (message.indexOf("authorization:github:success:") !== 0) return;
+              try {
+                window.localStorage.setItem(storageKey, message);
+              } catch (error) {}
+            }
+
+            function sendAuthorization(targetOrigin, shouldClose) {
               if (!window.opener) return false;
               didAuthorize = true;
               window.opener.postMessage(message, targetOrigin || window.location.origin);
-              setTimeout(function () {
-                if (window.opener) window.close();
-              }, 700);
+              if (shouldClose !== false) {
+                setTimeout(function () {
+                  if (window.opener) window.close();
+                }, 900);
+              }
               return true;
             }
 
             window.addEventListener("message", function (event) {
-              sendAuthorization(event.origin);
+              if (event.origin === window.location.origin) {
+                sendAuthorization(event.origin);
+              }
             }, false);
+
+            persistAuthorization();
 
             if (window.opener) {
               window.opener.postMessage("authorizing:github", "*");
+              sendAuthorization(window.location.origin, false);
             }
 
-            setTimeout(function () {
-              if (!didAuthorize && window.opener) {
-                window.opener.postMessage("authorizing:github", "*");
-              }
-            }, 250);
+            [250, 900, 1800].forEach(function (delay) {
+              setTimeout(function () {
+                if (window.opener) {
+                  window.opener.postMessage("authorizing:github", "*");
+                  sendAuthorization(window.location.origin, delay >= 900);
+                }
+              }, delay);
+            });
 
             setTimeout(function () {
-              if (!didAuthorize) {
-                sendAuthorization("*");
+              if (!window.opener && message.indexOf("authorization:github:success:") === 0) {
+                window.location.replace("/admin?decap_oauth=1");
               }
-            }, 1200);
+            }, 1100);
+
+            setTimeout(function () {
+              if (!didAuthorize && message.indexOf("authorization:github:error:") === 0) {
+                document.body.insertAdjacentHTML("beforeend", "<p>Retournez sur /admin et relancez la connexion si nécessaire.</p>");
+              }
+            }, 2200);
           })();
         </script>
       </body>
