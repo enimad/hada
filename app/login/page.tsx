@@ -12,13 +12,19 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"error" | "success">("success");
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     setEmail(params.get("email") ?? "");
     if (params.get("confirmed") === "1") {
+      setMessageTone("success");
       setMessage("Email confirmé. Vous pouvez maintenant vous connecter.");
+    }
+    if (params.get("password_reset") === "success") {
+      setMessageTone("success");
+      setMessage("Mot de passe mis à jour. Vous pouvez maintenant vous connecter.");
     }
   }, []);
 
@@ -41,6 +47,7 @@ export default function LoginPage() {
             const { error } = await supabase.auth.signInWithPassword({ email, password });
 
             if (error) {
+              setMessageTone("error");
               setMessage(error.message);
               return;
             }
@@ -65,13 +72,26 @@ export default function LoginPage() {
           />
         </div>
 
+        <div className="mt-5 text-right">
+          <Link
+            href={email ? `/login/forgot-password?email=${encodeURIComponent(email)}` : "/login/forgot-password"}
+            className="text-[15px] font-semibold tracking-[-0.03em] text-[var(--hada-navy)] underline decoration-[#d8cec8] underline-offset-4"
+          >
+            Mot de passe oublié ?
+          </Link>
+        </div>
+
         <div className="mt-10">
           <MainButton type="submit" disabled={!email || !password || isPending}>
             Je continue
           </MainButton>
         </div>
 
-        {message ? <p className="mt-4 text-center text-[14px] font-medium text-[var(--hada-coral)]">{message}</p> : null}
+        {message ? (
+          <p className={`mt-4 text-center text-[14px] font-medium ${messageTone === "error" ? "text-[var(--hada-coral)]" : "text-[var(--hada-navy)]"}`}>
+            {message}
+          </p>
+        ) : null}
         <div className="mt-8 text-center">
           <p className="text-[15px] text-[#7c7379]">Vous n’avez pas encore de compte Hada ?</p>
           <Link

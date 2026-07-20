@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { PASSWORD_RECOVERY_COOKIE, PASSWORD_RESET_PATH } from "./lib/auth/password-recovery";
 
 const PROTECTED_PATHS = ["/budget", "/chat", "/mon-offre", "/monmariage", "/vendors", "/venues", "/messages", "/onboarding"];
 
@@ -6,6 +7,17 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (pathname === "/") {
+    const recoveryCode = request.nextUrl.searchParams.get("code");
+    const recoveryRequested = request.cookies.get(PASSWORD_RECOVERY_COOKIE)?.value === "1";
+    if (recoveryCode && recoveryRequested) {
+      const callbackUrl = new URL("/auth/callback", request.url);
+      callbackUrl.searchParams.set("code", recoveryCode);
+      callbackUrl.searchParams.set("next", PASSWORD_RESET_PATH);
+      const response = NextResponse.redirect(callbackUrl);
+      response.cookies.delete(PASSWORD_RECOVERY_COOKIE);
+      return response;
+    }
+
     const response = NextResponse.next();
     request.cookies
       .getAll()
