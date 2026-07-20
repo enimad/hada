@@ -6,8 +6,8 @@ description: "Vous venez de vous fiancer et vous ne savez pas par où commencer 
   Découvrez les premières étapes essentielles pour organiser votre mariage
   sereinement : budget, invités, lieu, date et rétroplanning."
 category: Organisation
-publishedAt: 2026-07-13T15:20:00.000+02:00
-updatedAt: 2026-07-13T15:36:00.000+02:00
+publishedAt: 2026-07-20T16:32:00.000+02:00
+updatedAt: 2026-07-20T16:32:00.000+02:00
 heroImage: /uploads/blog/orga-mariage.png
 heroAlt: Couple fraîchement fiancé planifiant les premières étapes de
   l'organisation de leur mariage autour d'un carnet de notes.
