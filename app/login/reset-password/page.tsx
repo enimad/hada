@@ -107,10 +107,10 @@ export default function ResetPasswordPage() {
               return;
             }
 
-            await supabase.auth.signOut();
-            router.replace("/login?password_reset=success");
+            router.replace("/auth/continue?password_reset=success");
           });
         }}
+        autoComplete="off"
       >
         <div className="space-y-8">
           <LineInput
@@ -119,13 +119,23 @@ export default function ResetPasswordPage() {
             onChange={setPassword}
             type={showPassword ? "text" : "password"}
             placeholder="***********"
+            name="new-password"
+            autoComplete="new-password"
             rightSlot={
               <button type="button" onClick={() => setShowPassword((current) => !current)} className="text-[#8f8884]">
                 {showPassword ? <EyeOffIcon className="h-7 w-7" /> : <EyeIcon className="h-7 w-7" />}
               </button>
             }
           />
-          <LineInput label="Confirmer le mot de passe" value={confirmPassword} onChange={setConfirmPassword} type="password" placeholder="***********" />
+          <LineInput
+            label="Confirmer le mot de passe"
+            value={confirmPassword}
+            onChange={setConfirmPassword}
+            type="password"
+            placeholder="***********"
+            name="confirm-password"
+            autoComplete="new-password"
+          />
         </div>
 
         <div className="mt-10">

@@ -39,6 +39,7 @@ export default function LoginPage() {
 
       <form
         className="mt-12"
+        autoComplete="on"
         onSubmit={(event) => {
           event.preventDefault();
 
@@ -57,13 +58,24 @@ export default function LoginPage() {
         }}
       >
         <div className="space-y-8">
-          <LineInput label="Ton adresse mail" value={email} onChange={setEmail} placeholder="hada@gmail.com" type="email" inputMode="email" />
+          <LineInput
+            label="Ton adresse mail"
+            value={email}
+            onChange={setEmail}
+            placeholder="hada@gmail.com"
+            type="email"
+            inputMode="email"
+            name="email"
+            autoComplete="username"
+          />
           <LineInput
             label="Ton mot de passe"
             value={password}
             onChange={setPassword}
             type={showPassword ? "text" : "password"}
             placeholder="***********"
+            name="password"
+            autoComplete="current-password"
             rightSlot={
               <button type="button" onClick={() => setShowPassword((current) => !current)} className="text-[#8f8884]">
                 {showPassword ? <EyeOffIcon className="h-7 w-7" /> : <EyeIcon className="h-7 w-7" />}

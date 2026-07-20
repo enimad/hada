@@ -42,6 +42,7 @@ export default function ForgotPasswordPage() {
 
       <form
         className="mt-12"
+        autoComplete="on"
         onSubmit={(event) => {
           event.preventDefault();
           setMessage("");
@@ -63,7 +64,16 @@ export default function ForgotPasswordPage() {
           });
         }}
       >
-        <LineInput label="Ton adresse mail" value={email} onChange={updateEmail} placeholder="hada@gmail.com" type="email" inputMode="email" />
+        <LineInput
+          label="Ton adresse mail"
+          value={email}
+          onChange={updateEmail}
+          placeholder="hada@gmail.com"
+          type="email"
+          inputMode="email"
+          name="email"
+          autoComplete="email"
+        />
 
         <div className="mt-10">
           <MainButton type="submit" disabled={!email || isPending}>

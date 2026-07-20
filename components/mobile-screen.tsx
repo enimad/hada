@@ -116,6 +116,8 @@ export function LineInput({
   rightSlot,
   inputClassName = "",
   inputMode,
+  name,
+  autoComplete,
   compact = false
 }: {
   label?: string;
@@ -127,6 +129,8 @@ export function LineInput({
   rightSlot?: ReactNode;
   inputClassName?: string;
   inputMode?: InputHTMLAttributes<HTMLInputElement>["inputMode"];
+  name?: string;
+  autoComplete?: InputHTMLAttributes<HTMLInputElement>["autoComplete"];
   compact?: boolean;
 }) {
   return (
@@ -145,6 +149,8 @@ export function LineInput({
         <input
           type={type}
           inputMode={inputMode}
+          name={name}
+          autoComplete={autoComplete}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
