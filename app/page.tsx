@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { Metadata } from "next";
+import { PublicSiteHeader } from "@/components/public-site-header";
 
 const siteUrl = "https://hadawedding.fr";
 
@@ -28,13 +29,6 @@ export const metadata: Metadata = {
     type: "website"
   }
 };
-
-const navItems = [
-  { label: "Accueil", href: "#accueil" },
-  { label: "Fonctionnalités", href: "#fonctionnalites" },
-  { label: "La Team Hada", href: "#team" },
-  { label: "Blog Hada", href: "/blog" }
-];
 
 const features = [
   {
@@ -96,38 +90,7 @@ export default function LandingPage() {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareJsonLd) }} />
 
-      <header className="sticky top-0 z-30 border-b border-[#f0ddd8]/80 bg-[rgba(253,249,246,0.86)] backdrop-blur-xl">
-        <nav className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4 sm:px-8 lg:px-10" aria-label="Navigation principale">
-          <Link href="#accueil" className="flex items-center gap-3">
-            <Image src="/brand/hada-wordmark.png" alt="Hada" width={180} height={55} priority className="h-auto w-[118px] sm:w-[142px]" />
-          </Link>
-
-          <div className="hidden items-center rounded-full border border-[#eadbd6] bg-white/78 p-1 shadow-[0_18px_60px_rgba(43,33,79,0.08)] lg:flex">
-            {navItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="rounded-full px-5 py-3 text-sm font-bold text-[var(--hada-navy)] transition hover:bg-[#fff0f1] hover:text-[var(--hada-coral)]"
-              >
-                {item.label}
-              </Link>
-            ))}
-          </div>
-
-          <Link
-            href="/signup"
-            className="hidden h-12 items-center justify-center rounded-full bg-[var(--hada-coral)] px-5 text-sm font-extrabold text-white shadow-[0_18px_34px_rgba(251,105,116,0.24)] transition hover:bg-[#e95361] lg:inline-flex"
-          >
-            Tester Hada
-          </Link>
-          <Link
-            href="/blog"
-            className="inline-flex h-11 items-center justify-center rounded-full border border-[var(--hada-coral)] bg-white px-5 text-sm font-extrabold text-[var(--hada-coral)] shadow-[0_14px_28px_rgba(251,105,116,0.12)] transition lg:hidden"
-          >
-            Blog Hada
-          </Link>
-        </nav>
-      </header>
+      <PublicSiteHeader />
 
       <section id="accueil" className="relative px-5 pb-16 pt-12 sm:px-8 sm:pb-24 sm:pt-16">
         <div className="absolute inset-x-0 top-[-20%] h-[520px] bg-[radial-gradient(circle_at_52%_0%,rgba(251,105,116,0.24),transparent_42%),radial-gradient(circle_at_18%_10%,rgba(255,173,51,0.2),transparent_34%)]" />

@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { getPublishedBlogPosts } from "@/lib/blog";
+import { PublicSiteHeader } from "@/components/public-site-header";
 
 export const dynamic = "force-dynamic";
 
@@ -37,21 +38,7 @@ export default function BlogPage() {
   return (
     <main className="min-h-screen bg-[var(--hada-cream)] text-[var(--hada-navy)]">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(blogJsonLd) }} />
-      <header className="border-b border-[#f0ddd8] bg-white/70 px-5 py-5 backdrop-blur-xl sm:px-8">
-        <nav className="mx-auto flex max-w-6xl items-center justify-between gap-4" aria-label="Navigation blog">
-          <Link href="/" className="flex items-center gap-3">
-            <Image src="/brand/hada-wordmark.png" alt="Hada" width={160} height={50} priority className="h-auto w-[112px]" />
-          </Link>
-          <div className="flex items-center gap-3">
-            <Link href="/" className="hidden rounded-full border border-[#eadbd6] bg-white px-5 py-3 text-sm font-extrabold text-[var(--hada-navy)] sm:inline-flex">
-              Retour accueil
-            </Link>
-            <Link href="/signup" className="rounded-full bg-[var(--hada-coral)] px-5 py-3 text-sm font-extrabold text-white shadow-[0_14px_30px_rgba(251,105,116,0.24)]">
-              Tester Hada
-            </Link>
-          </div>
-        </nav>
-      </header>
+      <PublicSiteHeader />
 
       <section className="px-5 py-12 text-center sm:px-8 sm:py-16">
         <p className="text-sm font-extrabold uppercase tracking-[0.22em] text-[var(--hada-coral)]">Blog Hada</p>
