@@ -1,6 +1,6 @@
 ---
 draft: false
-title: "Je viens de me fiancer : par quoi commencer pour organiser son mariage ?"
+title: Par quoi commencer pour organiser son mariage ?
 slug: je-viens-de-me-fiancer-par-quoi-commencer
 description: "Vous venez de vous fiancer et vous ne savez pas par où commencer ?
   Découvrez les premières étapes essentielles pour organiser votre mariage
