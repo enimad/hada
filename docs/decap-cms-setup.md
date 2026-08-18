@@ -57,6 +57,29 @@ https://hadawedding.fr
 - Les articles avec `draft: true` ne sont pas affichés.
 - Les articles avec une date `publishedAt` future ne sont pas affichés avant cette date.
 
+## Publication en production
+
+Depuis `/admin`, publier un article ne modifie pas directement le site : Decap
+fusionne l'article dans la branche `main` du dépôt `enimad/hada`.
+
+Le blog lit les articles depuis les fichiers `content/blog` embarqués au moment
+du déploiement. Un article n'apparaît donc en ligne qu'après un nouveau
+déploiement.
+
+Le projet Vercel est connecté au dépôt GitHub : chaque fusion dans `main`
+déclenche automatiquement un déploiement de production. L'article est en ligne
+environ deux minutes après la publication, sans action manuelle.
+
+Points de vigilance :
+
+- la branche de production Vercel doit rester `main` ;
+- le workflow éditorial de Decap crée une branche `cms/blog/...` et une pull
+  request : celle-ci génère un déploiement de prévisualisation, et seule la
+  fusion dans `main` met le site à jour ;
+- si un déploiement manuel `vercel --prod` est lancé depuis un dossier local en
+  retard sur GitHub, il remet en ligne une version sans les derniers articles.
+  Faire `git pull` avant tout déploiement manuel.
+
 ## Sécurité
 
 - `open_authoring` n'est pas activé.
