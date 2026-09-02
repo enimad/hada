@@ -17,9 +17,6 @@ seoDescription: Qui paie quoi dans un mariage ? Découvrez les traditions, les
   répartitions possibles et nos conseils pour parler budget en famille sans
   tensions.
 ---
-Bien sûr. Voici la version **Markdown directement copiable dans ton back-office**, en conservant ton texte et en adaptant uniquement les éléments non supportés comme le tableau et les listes numérotées.
-
-```markdown
 ## Qui paie quoi dans un mariage ? Traditions, réalité et conseils pour éviter les tensions
 
 C’est une question que beaucoup de futur(e)s marié(e)s se posent, parfois sans oser la formuler trop directement : qui paie quoi dans un mariage ?
