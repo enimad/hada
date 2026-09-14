@@ -45,3 +45,8 @@ export function validateServerEnv() {
     assertEnv(key, process.env[key]);
   }
 }
+
+export function validateChatAiEnv() {
+  assertEnv("GOOGLE_API_KEY", process.env.GOOGLE_API_KEY);
+  assertEnv("MISTRAL_API_KEY", process.env.MISTRAL_API_KEY);
+}

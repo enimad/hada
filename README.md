@@ -61,13 +61,13 @@ Variables requises:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `MISTRAL_API_KEY`
+- `GOOGLE_API_KEY` (fournisseur principal du chat)
+- `GOOGLE_MODEL`
+- `MISTRAL_API_KEY` (fournisseur de secours du chat et extraction prestataires)
 - `MISTRAL_MODEL`
 
 Variables optionnelles:
 
-- `GOOGLE_API_KEY`
-- `GOOGLE_MODEL`
 - `DECAP_GITHUB_CLIENT_ID`
 - `DECAP_GITHUB_CLIENT_SECRET`
 - `FIRECRAWL_API_KEY`

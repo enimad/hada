@@ -13,16 +13,16 @@ NEXT_PUBLIC_SUPABASE_URL=https://ton-projet.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=ta_cle_anon
 SUPABASE_SERVICE_ROLE_KEY=ta_cle_service_role
 
+GOOGLE_API_KEY=ta_cle_google
+GOOGLE_MODEL=gemini-2.5-flash
+
 MISTRAL_API_KEY=ta_cle_mistral
-MISTRAL_MODEL=mistral-large-latest
+MISTRAL_MODEL=mistral-medium-latest
 ```
 
 Variables optionnelles:
 
 ```env
-GOOGLE_API_KEY=
-GOOGLE_MODEL=gemini-2.5-flash
-
 FIRECRAWL_API_KEY=
 FIRECRAWL_API_KEYS=
 

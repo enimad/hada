@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBudgetAllocationForVendorCategory } from "@/lib/budget";
-import { env, validateServerEnv } from "@/lib/env";
+import { env, validateChatAiEnv, validateServerEnv } from "@/lib/env";
 import { buildWeddingSummary } from "@/lib/prompts";
 import {
   buildRetrySearchPayload,
@@ -113,6 +113,7 @@ export async function POST(request: NextRequest) {
 
   try {
     validateServerEnv();
+    validateChatAiEnv();
     const { user, error: authError } = await getAuthenticatedUser(request);
     if (!user) return NextResponse.json({ error: authError }, { status: 401 });
 
@@ -645,7 +646,7 @@ async function generateStructuredHadaDecision(input: {
   systemPrompt: string;
   instruction: string;
 }) {
-  const providers = getProviderOrderForTask("turn");
+  const providers = getProviderOrder();
   for (const provider of providers) {
     try {
       const result = await fetchModelContent({
@@ -1161,7 +1162,7 @@ async function generateVisibleMessage(input: {
   maxTokens: number;
   temperature: number;
 }) {
-  const providers = getProviderOrderForTask(input.task);
+  const providers = getProviderOrder();
   for (const provider of providers) {
     try {
       const result = await fetchModelContent({
@@ -1187,21 +1188,11 @@ async function generateVisibleMessage(input: {
   return null;
 }
 
-function getProviderOrderForTask(task: AiTask): AiProvider[] {
-  const configured = parseProviderOrder(process.env.HADA_AI_PROVIDER_ORDER);
-  const preferred: AiProvider[] = configured ?? (task === "turn" ? ["mistral", "google"] : ["google", "mistral"]);
+function getProviderOrder(): AiProvider[] {
+  const preferred: AiProvider[] = ["google", "mistral"];
   return preferred.filter((provider) => (provider === "google" ? Boolean(env.googleApiKey) : Boolean(env.mistralApiKey)));
 }
 
-function parseProviderOrder(value: string | undefined): AiProvider[] | null {
-  const providers = (value ?? "")
-    .split(/[,;|\s]+/)
-    .map((item) => item.trim().toLowerCase())
-    .filter((item): item is AiProvider => item === "google" || item === "mistral");
-
-  const uniqueProviders = Array.from(new Set(providers));
-  return uniqueProviders.length > 0 ? uniqueProviders : null;
-}
 
 function sanitizeVisibleModelText(value: string | null) {
   if (!value) return null;
@@ -1297,7 +1288,7 @@ async function fetchMistralChatContent(input: {
         await sleep(MISTRAL_RATE_LIMIT_RETRY_MS);
         continue;
       }
-      if (!response.ok) return null;
+      if (!response.ok) throw await buildProviderHttpError("mistral", response);
 
       const result = await response.json();
       return result?.choices?.[0]?.message?.content?.trim() || null;
@@ -1336,7 +1327,7 @@ async function fetchGoogleGenerateContent(input: {
         await sleep(GOOGLE_RATE_LIMIT_RETRY_MS);
         continue;
       }
-      if (!response.ok) return null;
+      if (!response.ok) throw await buildProviderHttpError("google", response);
 
       const result = await response.json();
       if (!isGoogleResponseComplete(result)) return null;
@@ -1404,6 +1395,20 @@ function readGoogleText(value: unknown) {
     .join("")
     .trim();
   return text || null;
+}
+
+async function buildProviderHttpError(provider: AiProvider, response: Response) {
+  let detail = "";
+  try {
+    const payload = (await response.json()) as Record<string, unknown>;
+    const nestedError = payload.error && typeof payload.error === "object" ? (payload.error as Record<string, unknown>) : null;
+    const message = nestedError?.message ?? payload.message ?? payload.detail;
+    if (typeof message === "string") detail = message.replace(/\s+/g, " ").trim().slice(0, 240);
+  } catch {
+    // Le statut HTTP suffit si le fournisseur ne renvoie pas de JSON exploitable.
+  }
+
+  return new Error(provider + "_http_" + response.status + (detail ? ": " + detail : ""));
 }
 
 async function waitForGoogleRequestSlot() {

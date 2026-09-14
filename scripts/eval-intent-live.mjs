@@ -1,8 +1,8 @@
 /**
- * Évaluation LIVE du routeur d'intention Chat V2 contre l'API Mistral réelle.
+ * Évaluation LIVE du routeur d'intention Chat V2 contre l'API Google principale.
  *
  * Usage : npm run eval:intent
- * - lit MISTRAL_API_KEY / MISTRAL_MODEL dans .env.local ;
+ * - lit GOOGLE_API_KEY / GOOGLE_MODEL dans .env.local ;
  * - envoie le vrai prompt de décision (buildHadaTurnPrompt) en JSON mode
  *   sur chaque cas de CHAT_V2_LLM_EVAL_CASES ;
  * - applique la même porte d'exécution que la prod (applyExecutionGate) ;
@@ -22,10 +22,10 @@ const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 loadEnvLocal(path.join(root, ".env.local"));
 
-const apiKey = process.env.MISTRAL_API_KEY;
-const model = process.env.MISTRAL_MODEL || "mistral-medium-latest";
+const apiKey = process.env.GOOGLE_API_KEY;
+const model = process.env.GOOGLE_MODEL || "gemini-2.5-flash";
 if (!apiKey) {
-  console.error("MISTRAL_API_KEY introuvable (dans .env.local ou l'environnement).");
+  console.error("GOOGLE_API_KEY introuvable (dans .env.local ou l'environnement).");
   process.exit(1);
 }
 
@@ -81,7 +81,7 @@ async function evaluateCase(testCase, label = "") {
     pendingProposal: testCase.pendingProposal
   });
 
-  const raw = await callMistral(systemPrompt, testCase.userText);
+  const raw = await callGoogle(systemPrompt, testCase.userText);
   if (raw === "RATE_LIMITED") return "rate_limited";
   const decision = parseHadaDecisionResponse(raw);
 
@@ -121,7 +121,7 @@ async function evaluateCase(testCase, label = "") {
       (ok ? "" : ` — attendu ${testCase.expectedIntents.join(" ou ")}${testCase.expectedProposeSearch !== undefined ? ` (propose_search=${testCase.expectedProposeSearch})` : ""}`)
   );
 
-  // Espacement des appels pour respecter le rate limit Mistral.
+  // Espacement des appels pour respecter le rate limit Google.
   await sleep(1500);
   return "done";
 }
@@ -141,24 +141,26 @@ if (accuracy < 90) {
 }
 console.log("\nObjectif de précision atteint (>= 90%).");
 
-async function callMistral(systemPrompt, userText) {
+async function callGoogle(systemPrompt, userText) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      const response = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
+          "x-goog-api-key": apiKey
         },
         body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          max_tokens: 700,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userText }
-          ]
+          systemInstruction: {
+            parts: [{ text: systemPrompt }]
+          },
+          contents: [{ role: "user", parts: [{ text: userText }] }],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 700,
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingBudget: 0 }
+          }
         })
       });
 
@@ -167,18 +169,25 @@ async function callMistral(systemPrompt, userText) {
         continue;
       }
       if (!response.ok) {
-        console.error(`  (HTTP ${response.status} Mistral)`);
+        console.error(`  (HTTP ${response.status} Google)`);
         return null;
       }
 
       const result = await response.json();
-      return result?.choices?.[0]?.message?.content?.trim() || null;
+      const candidate = result?.candidates?.[0];
+      const finishReason = candidate?.finishReason;
+      if (finishReason && finishReason !== "STOP") return null;
+      const parts = candidate?.content?.parts;
+      const text = Array.isArray(parts)
+        ? parts.map((part) => (typeof part?.text === "string" ? part.text : "")).join("").trim()
+        : "";
+      return text || null;
     } catch (error) {
       console.error(`  (erreur réseau : ${error.message})`);
       await sleep(1500);
     }
   }
-  console.error("  (rate limit Mistral persistant, cas abandonné)");
+  console.error("  (rate limit Google persistant, cas abandonné)");
   return "RATE_LIMITED";
 }
 

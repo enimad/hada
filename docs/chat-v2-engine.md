@@ -12,7 +12,7 @@ Le serveur ne reclasse jamais la décision par regex. Il applique uniquement une
 ## Architecture d'un tour
 
 1. `ContextLoader` : la route (`app/api/chat-v2/route.ts`) charge l'utilisateur, le profil mariage, la conversation, les messages récents et les états en attente.
-2. `Turn Decision` : appel unique au modèle (Mistral en JSON mode, Google optionnel en fallback via `HADA_AI_PROVIDER_ORDER`) avec : persona Hada + politique de routage + profil mariage + historique compacté (10 messages) + états serveur.
+2. `Turn Decision` : appel unique au modèle (Google en JSON mode, puis Mistral en secours) avec : persona Hada + politique de routage + profil mariage + historique compacté (10 messages) + états serveur.
 3. `Execution Gate` : le serveur vérifie que l'action décidée est légitime (voir plus bas), sans jamais reclasser advice/chat par regex.
 4. `Tool Executor` : la route exécute seulement les actions validées : proposition de recherche, recherche prestataire, écriture profil confirmée.
 5. `Response Composer` : la reply du LLM est utilisée telle quelle (sanitizée) pour advice/chat/deny/proposition ; les annonces de recherche et questions de clarification restent générées par un appel dédié.
