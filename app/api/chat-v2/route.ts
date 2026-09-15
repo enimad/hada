@@ -1362,10 +1362,7 @@ function buildGoogleGenerateContentBody(input: {
     generationConfig: {
       temperature: input.temperature,
       maxOutputTokens: Math.max(input.maxTokens, 64),
-      ...(input.jsonMode ? { responseMimeType: "application/json" } : {}),
-      thinkingConfig: {
-        thinkingBudget: 0
-      }
+      ...(input.jsonMode ? { responseMimeType: "application/json" } : {})
     }
   };
 }

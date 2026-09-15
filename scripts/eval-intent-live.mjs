@@ -158,8 +158,7 @@ async function callGoogle(systemPrompt, userText) {
           generationConfig: {
             temperature: 0.2,
             maxOutputTokens: 700,
-            responseMimeType: "application/json",
-            thinkingConfig: { thinkingBudget: 0 }
+            responseMimeType: "application/json"
           }
         })
       });
