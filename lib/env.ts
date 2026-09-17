@@ -1,8 +1,7 @@
 const requiredServerEnv = [
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-  "SUPABASE_SERVICE_ROLE_KEY",
-  "MISTRAL_API_KEY"
+  "SUPABASE_SERVICE_ROLE_KEY"
 ] as const;
 
 function assertEnv(name: string, value: string | undefined) {
@@ -47,6 +46,7 @@ export function validateServerEnv() {
 }
 
 export function validateChatAiEnv() {
-  assertEnv("GOOGLE_API_KEY", process.env.GOOGLE_API_KEY);
-  assertEnv("MISTRAL_API_KEY", process.env.MISTRAL_API_KEY);
+  if (!process.env.GOOGLE_API_KEY && !process.env.MISTRAL_API_KEY) {
+    throw new Error("Missing environment variable: GOOGLE_API_KEY or MISTRAL_API_KEY");
+  }
 }

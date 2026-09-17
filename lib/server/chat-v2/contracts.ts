@@ -376,6 +376,8 @@ export function heuristicClassificationV2(
   pendingProposal: PendingProposalSnapshot = null
 ): IntentClassification {
   const details = extractSearchDetails(userText);
+  // A short confirmation/detail must not erase the category/location already collected.
+  const definedDetails = Object.fromEntries(Object.entries(details).filter(([, value]) => value !== null && value !== undefined));
   const hasPending = Boolean(pendingSearch || pendingProposal);
 
   if (isLowSignalMessage(userText)) {
@@ -389,7 +391,7 @@ export function heuristicClassificationV2(
   if (hasPending && isAffirmativeReply(userText)) {
     return {
       ...baseClassification("confirm", 0.7, "heuristic_confirm"),
-      vendorSearch: normalizeSearchBrief({ ...(pendingProposal?.brief ?? pendingSearch?.brief), ...details })
+      vendorSearch: normalizeSearchBrief({ ...(pendingProposal?.brief ?? pendingSearch?.brief), ...definedDetails })
     };
   }
 
@@ -404,7 +406,7 @@ export function heuristicClassificationV2(
   if (pendingSearch && hasUsefulSearchDetails(details)) {
     return {
       ...baseClassification("search_detail", 0.68, "heuristic_search_detail"),
-      vendorSearch: normalizeSearchBrief({ ...pendingSearch.brief, ...details })
+      vendorSearch: normalizeSearchBrief({ ...pendingSearch.brief, ...definedDetails })
     };
   }
 

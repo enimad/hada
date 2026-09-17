@@ -19,7 +19,7 @@ Le socle produit disponible dans ce depot couvre:
 - pages `Budget` et `Mon offre`
 - recherche de prestataires depuis le chat
 - recherche web Firecrawl avec rotation de cles et fallback catalogue local
-- normalisation de fiches prestataires via Mistral
+- extraction des fiches via Google avec secours Mistral, puis normalisation optionnelle via Mistral
 - pages de selection et de detail prestataire
 - brouillon email de contact via `mailto:`
 - journalisation des prises de contact
@@ -32,7 +32,7 @@ Le depot local est aligne avec `origin/main` sur `git@github.com:enimad/hada.git
 - Frontend: Next.js App Router + TypeScript
 - UI: Tailwind CSS
 - Auth et database: Supabase
-- Chat IA: Mistral API
+- Chat IA: Google avec secours Mistral
 - Orchestration chat-v2: Google + fallback Mistral
 - Recherche web: Firecrawl
 - CMS blog: Decap CMS + GitHub OAuth
@@ -44,6 +44,7 @@ Le depot local est aligne avec `origin/main` sur `git@github.com:enimad/hada.git
 npm install
 npm run dev
 npm run typecheck
+npm run test:search
 npm run build
 ```
 
@@ -63,11 +64,14 @@ Variables requises:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `GOOGLE_API_KEY` (fournisseur principal du chat)
 - `GOOGLE_MODEL`
-- `MISTRAL_API_KEY` (fournisseur de secours du chat et extraction prestataires)
-- `MISTRAL_MODEL`
+
+Au moins une clé IA (`GOOGLE_API_KEY` ou `MISTRAL_API_KEY`) est nécessaire. Google est prioritaire pour le chat et l'extraction des pages Firecrawl. Mistral est optionnel si Google est configuré.
 
 Variables optionnelles:
 
+- `MISTRAL_API_KEY` (secours chat/extraction et enrichissement des fiches)
+- `MISTRAL_MODEL`
+- `MISTRAL_EXTRACTION_MODEL`
 - `DECAP_GITHUB_CLIENT_ID`
 - `DECAP_GITHUB_CLIENT_SECRET`
 - `FIRECRAWL_API_KEY`
@@ -95,5 +99,6 @@ Les routes serveur utilisent aujourd'hui la `SUPABASE_SERVICE_ROLE_KEY`; les tab
 - [docs/database-schema.md](docs/database-schema.md): schema Supabase utilise
 - [docs/mvp-api.md](docs/mvp-api.md): routes API reelles
 - [docs/conversation-flows.md](docs/conversation-flows.md): flux chat et recherche
+- [docs/search-debug-2026-09-17.md](docs/search-debug-2026-09-17.md): diagnostic et vérification de la recherche Firecrawl
 - [docs/product-blueprint.md](docs/product-blueprint.md): positionnement produit
 - [docs/roadmap.md](docs/roadmap.md): priorites restantes

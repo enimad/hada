@@ -1,6 +1,6 @@
 # Deploy Hada
 
-Guide de deploiement pour `Vercel + Supabase + Mistral + Firecrawl`.
+Guide de deploiement pour `Vercel + Supabase + Google + Firecrawl` (Mistral en secours).
 
 ## Variables Vercel
 
@@ -16,13 +16,17 @@ SUPABASE_SERVICE_ROLE_KEY=ta_cle_service_role
 GOOGLE_API_KEY=ta_cle_google
 GOOGLE_MODEL=gemini-2.5-flash
 
-MISTRAL_API_KEY=ta_cle_mistral
-MISTRAL_MODEL=mistral-medium-latest
 ```
+
+Une clé IA au moins est nécessaire : Google en priorité, ou Mistral. L'extraction Firecrawl utilise aussi Google en priorité et ne dépend plus exclusivement de Mistral.
 
 Variables optionnelles:
 
 ```env
+MISTRAL_API_KEY=ta_cle_mistral
+MISTRAL_MODEL=mistral-medium-latest
+MISTRAL_EXTRACTION_MODEL=mistral-small-latest
+
 FIRECRAWL_API_KEY=
 FIRECRAWL_API_KEYS=
 
@@ -108,6 +112,10 @@ npm run start
 ```
 
 ## Verification Post-Deploiement
+
+Les deux routes `/api/chat` et `/api/chat-v2` déclarent `maxDuration = 120`. La recherche dispose de 30 s en mode strict et de 25 s pour l'éventuelle passe élargie ; les fiches déjà vérifiées sont conservées à l'échéance. L'enrichissement Mistral optionnel est limité à 7 s. Vérifier que les réglages de fonctions Vercel permettent cette durée.
+
+Avant publication : `npm run typecheck`, `npm run test:intent`, `npm run test:directory`, `npm run test:search`, `npm run build`. Le test réseau `npm run eval:search` utilise une base en mémoire et les clés configurées localement ; il ne valide pas les secrets du déploiement Vercel.
 
 Verifier ce parcours:
 

@@ -49,11 +49,11 @@ const SEARCH_QUOTA_LIMIT = 2;
 const SEARCH_QUOTA_WINDOW_HOURS = 48;
 const SEARCH_QUOTA_WINDOW_MS = SEARCH_QUOTA_WINDOW_HOURS * 60 * 60 * 1000;
 const SEARCH_QUOTA_MARKER = { beta_search_quota: "v1" };
-// Budgets alignés sur le scrape Firecrawl à 20 s (+ marge SDK) : recherche SERP ~3 s
-// puis scrapes en parallèle. Total pire cas strict+étendu ≈ 48 s, sous le maxDuration
-// de 60 s de la route chat-v2.
-const STRICT_VENDOR_SEARCH_TIMEOUT_MS = 26000;
-const EXPANDED_VENDOR_SEARCH_TIMEOUT_MS = 22000;
+// SERP, scrape ET extraction partagent le budget de chaque passe. Le moteur
+// conserve les fiches déjà vérifiées à l'échéance et arrête les extractions restantes.
+// Les routes disposent de 120 s pour inclure routage, normalisation et sauvegarde.
+const STRICT_VENDOR_SEARCH_TIMEOUT_MS = 30000;
+const EXPANDED_VENDOR_SEARCH_TIMEOUT_MS = 25000;
 
 export type SearchQuotaStatus = {
   limit: number;
@@ -255,35 +255,29 @@ export async function createSearchResultsForUser(
 
   const firecrawlCandidates = options.expandedOnly
     ? []
-    : await searchVendorsWithTimeBudget(
-        searchVendorsWithFirecrawl(supabase, {
+    : await searchVendorsWithFirecrawl(supabase, {
           userId: input.userId,
           category: input.search.category,
           query: input.search.searchQuery,
           location: input.search.location,
           profile: input.profile,
-          mode: "strict"
-        }),
-        STRICT_VENDOR_SEARCH_TIMEOUT_MS,
-        "strict"
-      );
+          mode: "strict",
+          timeBudgetMs: STRICT_VENDOR_SEARCH_TIMEOUT_MS
+        });
 
   let candidates = firecrawlCandidates.slice(0, 3);
   let mode: SearchResultsOutcome["mode"] = "strict";
 
   if (candidates.length === 0) {
-    const expandedCandidates = await searchVendorsWithTimeBudget(
-      searchVendorsWithFirecrawl(supabase, {
+    const expandedCandidates = await searchVendorsWithFirecrawl(supabase, {
         userId: input.userId,
         category: input.search.category,
         query: buildExpandedSearchQuery(input.search, input.profile),
         location: input.search.location,
         profile: input.profile,
-        mode: "expanded"
-      }),
-      EXPANDED_VENDOR_SEARCH_TIMEOUT_MS,
-      "expanded"
-    );
+        mode: "expanded",
+        timeBudgetMs: EXPANDED_VENDOR_SEARCH_TIMEOUT_MS
+      });
     candidates = expandedCandidates.slice(0, 3);
     mode = "expanded";
   }
@@ -408,31 +402,6 @@ export async function createSearchResultsForUser(
     mode: candidates.length > 0 ? mode : "external_fallback",
     externalSearchUrl: candidates.length > 0 ? undefined : buildExternalSearchUrl(input.search, input.profile)
   };
-}
-
-async function searchVendorsWithTimeBudget(
-  searchPromise: Promise<VendorCatalogEntry[]>,
-  timeoutMs: number,
-  mode: SearchResultsOutcome["mode"]
-) {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  const safeSearchPromise = searchPromise.catch((error) => {
-    console.error("Vendor search failed", { mode, error: error instanceof Error ? error.message : "Unknown error" });
-    return [];
-  });
-
-  const timeoutPromise = new Promise<VendorCatalogEntry[]>((resolve) => {
-    timeoutId = setTimeout(() => {
-      console.warn("Vendor search exceeded time budget", { mode, timeoutMs });
-      resolve([]);
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([safeSearchPromise, timeoutPromise]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
 }
 
 export async function getSearchQuotaStatus(supabase: SupabaseClient, userId: string): Promise<SearchQuotaStatus> {

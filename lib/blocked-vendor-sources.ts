@@ -1,5 +1,9 @@
 const BLOCKED_WEDDING_DIRECTORY_HOSTS = [
   "mariages.net",
+  "mywed.com",
+  "linkaband.com",
+  "prontopro.fr",
+  "allovoisins.com",
   "theknot.com",
   "zankyou.fr",
   "matrimonio.com",

@@ -40,7 +40,7 @@ type AiChatMessage = {
 };
 
 type AiProvider = "google" | "mistral";
-type AiTask = "turn" | "reply" | "search_announcement";
+type AiTask = "turn" | "reply";
 
 type PendingV2Search = {
   messageId: string;
@@ -71,9 +71,8 @@ type ChatV2FallbackContext = {
   conversationId: string;
 };
 
-// Vercel : la recherche prestataire (SERP + scrapes 20 s + relance étendue) peut
-// dépasser le timeout par défaut des fonctions serverless.
-export const maxDuration = 60;
+// Inclut routage IA, deux passes de recherche/extraction, normalisation et sauvegarde.
+export const maxDuration = 120;
 
 const CHAT_V2_STATUS = "chat_v2_active";
 const GOOGLE_MIN_REQUEST_INTERVAL_MS = 450;
@@ -197,6 +196,12 @@ export async function POST(request: NextRequest) {
         pendingProposal: pendingProposalSnapshot
       }
     );
+
+    console.info("chat_v2_decision", {
+      intent: classification.intent,
+      category: classification.vendorSearch?.category ?? null,
+      confidence: classification.confidence
+    });
 
     const isSearchFamilyIntent =
       classification.intent === "search_request" || classification.intent === "search_detail" || classification.intent === "confirm";
@@ -463,26 +468,9 @@ async function performVendorSearchV2(input: {
 
   const hasResults = searchResults.candidates.length > 0;
   const categoryLabel = getVendorCategoryLabel(search.category, searchResults.candidates.length || 2);
-  const announcement = await generateVisibleMessage({
-    task: "search_announcement",
-    systemPrompt: buildChatV2VisibleReplyPrompt(),
-    maxTokens: 190,
-    temperature: 0.45,
-    instruction: [
-      "Écris directement le message final affiché au couple pour annoncer le résultat d'une recherche de prestataires. Tu es Hada et tu parles à la première personne.",
-      "INTERDIT : préambule ou mise en scène (« Voici un petit mot... »), guillemets autour du message, mention ou description d'un bouton, didascalie entre parenthèses, prénoms du couple en en-tête.",
-      "Ne cite aucun nom de prestataire.",
-      "Ne mentionne jamais Firecrawl, scraping, Supabase, Mistral, Google, API, quota ou backend.",
-      `Profil : ${buildWeddingSummary(input.profile)}`,
-      `Type de prestataire : ${categoryLabel}`,
-      `Nombre de fiches fiables créées : ${searchResults.candidates.length}`,
-      hasResults
-        ? "Dis que les fiches sont prêtes à consulter juste en dessous (un bouton s'affiche automatiquement sous ton message, ne le décris pas)."
-        : "Dis que Hada n'a pas encore assez d'éléments fiables et invite à ajuster la demande."
-    ].join("\n")
-  });
-
-  const content = [input.introMessage, announcement ?? buildSearchAnnouncementFallback(categoryLabel, hasResults)]
+  // Le nombre et la disponibilité des fiches sont des faits serveur. Un nouvel
+  // appel LLM ajoutait de la latence et promettait à tort un budget/disponibilité validés.
+  const content = [input.introMessage, buildSearchAnnouncement(categoryLabel, searchResults.candidates.length)]
     .filter(Boolean)
     .join("\n\n");
   const metadata = {
@@ -1455,9 +1443,9 @@ function jsonChatResponse(conversationId: string, assistantMessage: ChatMessageR
 
 type ChatMessageResponse = Awaited<ReturnType<typeof insertConversationMessage>>;
 
-function buildSearchAnnouncementFallback(categoryLabel: string, hasResults: boolean) {
-  return hasResults
-    ? `J'ai trouvé des ${categoryLabel} fiables et les fiches sont prêtes à consulter.`
+function buildSearchAnnouncement(categoryLabel: string, count: number) {
+  return count > 0
+    ? `J'ai trouvé ${count} ${categoryLabel} dont les fiches sont prêtes à consulter ci-dessous. Les tarifs et les disponibilités restent à confirmer auprès des prestataires.`
     : `Je n'ai pas encore assez d'éléments fiables pour créer des fiches ${categoryLabel}. Donnez-moi un peu plus de précision et je relance proprement.`;
 }
 

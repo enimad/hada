@@ -10,6 +10,8 @@
     "test:intent": "node scripts/test-intent-router.mjs",
     "eval:intent": "node scripts/eval-intent-live.mjs",
     "test:directory": "node scripts/test-directory-detector.mjs",
+    "test:search": "node --test scripts/test-search-pipeline.mjs",
+    "eval:search": "node scripts/diagnose-search.mjs --end-to-end",
     "purge:directory": "node scripts/purge-directory-candidates.mjs"
   },
   "dependencies": {

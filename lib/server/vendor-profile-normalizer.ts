@@ -17,7 +17,9 @@ type MistralMessage = {
 };
 
 const NORMALIZER_VERSION = "vendor-profile-agent-v6";
-const NORMALIZER_TIMEOUT_MS = 45000;
+// This optional second pass must not hold already verified search results for 45 s.
+const NORMALIZER_TIMEOUT_MS = 7000;
+let normalizerUnavailableUntil = 0;
 const VENDOR_PROFILE_AGENT_ID = process.env.MISTRAL_VENDOR_PROFILE_AGENT_ID?.trim() || "ag_019df51d1f447452afaf38b74a71c7dd";
 const VENDOR_PROFILE_AGENT_VERSION = Number(process.env.MISTRAL_VENDOR_PROFILE_AGENT_VERSION?.trim() || 6);
 
@@ -121,9 +123,13 @@ export async function normalizeVendorProfileWithMistral(input: NormalizeInput): 
     return { vendorProfile: fallback, usedFallback: true, error: "missing_mistral_key" };
   }
 
+  if (Date.now() < normalizerUnavailableUntil) {
+    return { vendorProfile: fallback, usedFallback: true, error: "mistral_agent_cooldown" };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), NORMALIZER_TIMEOUT_MS);
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), NORMALIZER_TIMEOUT_MS);
     const messages: MistralMessage[] = [
       { role: "user", content: buildNormalizerUserMessage(input) }
     ];
@@ -140,9 +146,11 @@ export async function normalizeVendorProfileWithMistral(input: NormalizeInput): 
         agent_version: VENDOR_PROFILE_AGENT_VERSION,
         inputs: messages
       })
-    }).finally(() => clearTimeout(timeout));
+    });
 
     if (!response.ok) {
+      if ([401, 402, 403, 429].includes(response.status)) normalizerUnavailableUntil = Date.now() + 60000;
+      console.warn("vendor_normalizer_unavailable", { status: response.status });
       return { vendorProfile: fallback, usedFallback: true, error: `mistral_agent_${response.status}` };
     }
 
@@ -162,6 +170,8 @@ export async function normalizeVendorProfileWithMistral(input: NormalizeInput): 
       usedFallback: true,
       error: error instanceof Error ? error.message : "normalizer_error"
     };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

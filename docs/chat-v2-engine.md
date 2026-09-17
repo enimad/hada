@@ -15,7 +15,7 @@ Le serveur ne reclasse jamais la décision par regex. Il applique uniquement une
 2. `Turn Decision` : appel unique au modèle (Google en JSON mode, puis Mistral en secours) avec : persona Hada + politique de routage + profil mariage + historique compacté (10 messages) + états serveur.
 3. `Execution Gate` : le serveur vérifie que l'action décidée est légitime (voir plus bas), sans jamais reclasser advice/chat par regex.
 4. `Tool Executor` : la route exécute seulement les actions validées : proposition de recherche, recherche prestataire, écriture profil confirmée.
-5. `Response Composer` : la reply du LLM est utilisée telle quelle (sanitizée) pour advice/chat/deny/proposition ; les annonces de recherche et questions de clarification restent générées par un appel dédié.
+5. `Response Composer` : la reply du LLM est utilisée telle quelle (sanitizée) pour advice/chat/deny/proposition. Les questions de clarification ont un appel dédié. Les annonces de recherche sont composées par le serveur à partir du nombre réel de fiches, sans promesse de tarifs ou de disponibilité vérifiés.
 
 ## Intentions
 
@@ -58,7 +58,9 @@ Inchangé : le profil mariage est la source de vérité. Toute mise à jour pass
 ## Tests
 
 - `npm run test:intent` : ~40 cas déterministes (`CHAT_V2_GUARD_TEST_CASES`) qui valident le mode dégradé + la porte d'exécution, sans appel réseau.
-- `npm run eval:intent` : évaluation live du routeur réel contre l'API Mistral (`CHAT_V2_LLM_EVAL_CASES`, `scripts/eval-intent-live.mjs`). Cible : ≥ 90 % de précision sur les cas évalués. Attention au rate limit du compte Mistral (le script espace et rejoue les cas limités).
+- `npm run eval:intent` : évaluation live du routeur réel contre Google (`CHAT_V2_LLM_EVAL_CASES`, `scripts/eval-intent-live.mjs`). Cible : ≥ 90 % de précision sur les cas évalués.
+- `npm run test:search` : non-régression du parcours Firecrawl, extraction Google/secours Mistral, délais, filtres qualité et route complète (sans réseau).
+- `npm run eval:search` : route POST réelle et API Google/Firecrawl/Mistral réelles, avec authentification et base de données simulées en mémoire. Vérifie les fiches enregistrées, le statut `results_ready` et le lien de consultation. Consomme des crédits API ; ne touche pas aux données utilisateurs.
 
 ## Bugs prévenus par conception
 
